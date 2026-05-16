@@ -56,7 +56,7 @@ def _apply_overrides(args: argparse.Namespace, settings) -> None:
 def cmd_ingest(args: argparse.Namespace) -> None:
     from docquery.config import Settings
     from docquery.embeddings.provider import get_embeddings
-    from docquery.ingestion import chunker, pdf_loader
+    from docquery.ingestion import chunker, pdf_loader, text_loader
     from docquery.storage.vector_store import VectorStore
 
     settings = Settings()
@@ -72,11 +72,14 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     vs = VectorStore(settings.db_path, embedding_dim=dim)
     total_inserted = total_skipped = 0
-    for pdf_path in args.pdfs:
-        docs = pdf_loader.load(pdf_path)
+    for file_path in args.files:
+        if file_path.lower().endswith(".pdf"):
+            docs = pdf_loader.load(file_path)
+        else:
+            docs = text_loader.load(file_path)
         chunks = chunker.chunk(docs, settings)
         inserted, skipped = vs.add_chunks(chunks, embeddings, batch_size=settings.embed_batch_size)
-        print(f"  {pdf_path}: {inserted} new chunks, {skipped} duplicates skipped")
+        print(f"  {file_path}: {inserted} new chunks, {skipped} duplicates skipped")
         total_inserted += inserted
         total_skipped += skipped
     total = vs.get_chunk_count()
@@ -186,7 +189,8 @@ def main() -> None:
 
     # ingest
     p_ingest = sub.add_parser("ingest", help="Ingest one or more PDFs into the vector database")
-    p_ingest.add_argument("pdfs", nargs="+", metavar="PDF", help="One or more PDF files to ingest")
+    p_ingest.add_argument("files", nargs="+", metavar="FILE",
+                          help="One or more PDF or plain-text/code files to ingest")
     p_ingest.add_argument("--chunk-size", type=int, default=None,
                           help="Characters per chunk (overrides CHUNK_SIZE env var)")
     p_ingest.add_argument("--chunk-overlap", type=int, default=None,
