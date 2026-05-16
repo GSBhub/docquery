@@ -38,18 +38,22 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     if getattr(args, "chunk_overlap", None) is not None:
         settings.chunk_overlap = args.chunk_overlap
 
-    docs = pdf_loader.load(args.pdf)
-    chunks = chunker.chunk(docs, settings)
     embeddings = get_embeddings(settings)
-
-    # Determine embedding dim from a sample embedding
     sample = embeddings.embed_query("probe")
     dim = len(sample)
 
     vs = VectorStore(settings.db_path, embedding_dim=dim)
-    vs.add_chunks(chunks, embeddings, batch_size=settings.embed_batch_size)
+    total_inserted = total_skipped = 0
+    for pdf_path in args.pdfs:
+        docs = pdf_loader.load(pdf_path)
+        chunks = chunker.chunk(docs, settings)
+        inserted, skipped = vs.add_chunks(chunks, embeddings, batch_size=settings.embed_batch_size)
+        print(f"  {pdf_path}: {inserted} new chunks, {skipped} duplicates skipped")
+        total_inserted += inserted
+        total_skipped += skipped
+    total = vs.get_chunk_count()
     vs.close()
-    print(f"Ingested {vs.get_chunk_count() if False else len(chunks)} chunks into {settings.db_path}")
+    print(f"Done — {total_inserted} new, {total_skipped} skipped. DB total: {total} chunks ({settings.db_path})")
 
 
 def cmd_query(args: argparse.Namespace) -> None:
@@ -150,8 +154,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ingest
-    p_ingest = sub.add_parser("ingest", help="Ingest a PDF into the vector database")
-    p_ingest.add_argument("pdf", help="Path to the PDF file")
+    p_ingest = sub.add_parser("ingest", help="Ingest one or more PDFs into the vector database")
+    p_ingest.add_argument("pdfs", nargs="+", metavar="PDF", help="One or more PDF files to ingest")
     p_ingest.add_argument("--chunk-size", type=int, default=None,
                           help="Characters per chunk (overrides CHUNK_SIZE env var)")
     p_ingest.add_argument("--chunk-overlap", type=int, default=None,

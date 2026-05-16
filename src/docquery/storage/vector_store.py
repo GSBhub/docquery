@@ -89,7 +89,7 @@ class VectorStore:
         """)
         self._conn.commit()
 
-    def add_chunks(self, chunks: list[Document], embeddings: Embeddings, batch_size: int = 32) -> None:
+    def add_chunks(self, chunks: list[Document], embeddings: Embeddings, batch_size: int = 32) -> tuple[int, int]:
         batches = list(_batched(chunks, batch_size))
         all_embeddings: list[list[float]] = []
 
@@ -128,6 +128,7 @@ class VectorStore:
 
         self._conn.commit()
         logger.info("Inserted %d chunks, skipped %d duplicates", inserted, skipped)
+        return inserted, skipped
 
     def similarity_search(self, query_vec: list[float], k: int = 5) -> list[dict[str, Any]]:
         logger.debug("similarity_search k=%d vec_dim=%d", k, len(query_vec))
