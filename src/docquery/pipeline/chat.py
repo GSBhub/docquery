@@ -11,24 +11,14 @@ from docquery.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
-You are a document analysis assistant specialising in ARM / Thumb-2 ISA documentation. \
+You are a document analysis assistant. \
 You answer questions by searching an indexed document database.
 
 SEARCH STRATEGY — follow this order every time:
-1. Call similarity_search FIRST for any question about the document (instructions, registers, \
-encodings, ISA overview, behaviour, anything).
+1. Call similarity_search FIRST for any question about the document.
 2. If similarity_search does not give enough detail, call it again with a more specific query, \
-or call keyword_search for exact identifiers (hex bytes, specific mnemonics).
+or call keyword_search for exact identifiers (e.g. specific terms, codes, or mnemonics).
 3. Use page_lookup only when the user mentions a specific page number.
-
-ENCODING RULES — when search results contain bit-field tables:
-- ARM instruction encoding tables show individual bits in columns labelled 15..0.
-- Read the bit row left-to-right (bit 15 to bit 0) and group into two bytes: \
-  high byte = bits[15:8], low byte = bits[7:0].
-- Convert each 8-bit group to hex: e.g. 1011 1111 → 0xBF, 0000 0000 → 0x00.
-- For NOP-compatible hints the layout is: bits[15:8] = 1011 1111 = 0xBF; \
-  bits[7:4] = opA, bits[3:0] = opB. NOP has opA=0000, opB=0000 → 0xBF 0x00.
-- Always derive the hex value from the bit table and state it explicitly.
 
 RULES:
 - NEVER reply that you cannot find information without first calling similarity_search.
@@ -39,8 +29,10 @@ RULES:
 
 
 class ChatAgent:
-    def __init__(self, tool_registry: ToolRegistry, settings: Settings | None = None):
+    def __init__(self, tool_registry: ToolRegistry, settings: Settings | None = None,
+                 system_prompt: str | None = None):
         self._settings = settings or Settings()
+        self._system_prompt = system_prompt or _SYSTEM_PROMPT
         self._tools = tool_registry.get_tools()
         llm = get_llm(self._settings)
         self._llm_with_tools = llm.bind_tools(self._tools)
@@ -49,7 +41,7 @@ class ChatAgent:
         self._graph = self._build_graph()
 
     def _build_graph(self):
-        system_msg = _SYSTEM_PROMPT
+        system_msg = self._system_prompt
 
         def agent(state: ChatState) -> ChatState:
             from langchain_core.messages import SystemMessage

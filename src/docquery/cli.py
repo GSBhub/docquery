@@ -1,6 +1,8 @@
 import argparse
 import importlib
+import json
 import sys
+from pathlib import Path
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -14,6 +16,32 @@ def _add_inference_args(parser: argparse.ArgumentParser) -> None:
                         help="Number of similarity results to retrieve (overrides TOP_K env var)")
     parser.add_argument("--temperature", type=float, default=None,
                         help="LLM sampling temperature 0–2 (overrides TEMPERATURE env var, default 0)")
+
+
+def _add_prompt_args(parser: argparse.ArgumentParser) -> None:
+    """--system-prompt and --preset for chat/query subcommands."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--system-prompt", default=None, metavar="TEXT",
+                       help="Override the default system prompt with TEXT")
+    group.add_argument("--preset", default=None, metavar="NAME",
+                       help="Load a named system prompt from examples/queries.json")
+
+
+def _resolve_system_prompt(args: argparse.Namespace) -> str | None:
+    preset = getattr(args, "preset", None)
+    if preset:
+        presets_file = Path("examples/queries.json")
+        if not presets_file.exists():
+            print(f"Error: presets file not found at {presets_file.resolve()}\n"
+                  f"Run docquery from the project root, or check that examples/queries.json exists.")
+            raise SystemExit(1)
+        data = json.loads(presets_file.read_text())
+        if preset not in data:
+            available = ", ".join(data.keys())
+            print(f"Error: preset {preset!r} not found. Available: {available}")
+            raise SystemExit(1)
+        return data[preset]["system_prompt"]
+    return getattr(args, "system_prompt", None)
 
 
 def _apply_overrides(args: argparse.Namespace, settings) -> None:
@@ -62,6 +90,8 @@ def cmd_query(args: argparse.Namespace) -> None:
     settings = Settings()
     _apply_overrides(args, settings)
 
+    system_prompt = _resolve_system_prompt(args)
+
     if not args.schema:
         # No Pydantic schema supplied — run a one-shot RAG answer
         from docquery.embeddings.provider import get_embeddings
@@ -73,7 +103,7 @@ def cmd_query(args: argparse.Namespace) -> None:
         dim = len(embeddings.embed_query("probe"))
         vs = VectorStore(settings.db_path, embedding_dim=dim)
         registry = ToolRegistry(vs, embeddings, settings)
-        agent = ChatAgent(registry, settings)
+        agent = ChatAgent(registry, settings, system_prompt=system_prompt)
         print(agent.chat(args.prompt))
         vs.close()
         return
@@ -101,7 +131,7 @@ def cmd_query(args: argparse.Namespace) -> None:
     pipeline = ExtractionPipeline(
         db_path=settings.db_path,
         output_model=output_model,
-        system_prompt=args.system_prompt or f"Extract structured data matching the {class_name} schema.",
+        system_prompt=system_prompt or f"Extract structured data matching the {class_name} schema.",
         settings=settings,
     )
     result = pipeline.run(args.prompt)
@@ -117,6 +147,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
     settings = Settings()
     _apply_overrides(args, settings)
+    system_prompt = _resolve_system_prompt(args)
 
     embeddings = get_embeddings(settings)
     sample = embeddings.embed_query("probe")
@@ -124,7 +155,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
     vs = VectorStore(settings.db_path, embedding_dim=dim)
     registry = ToolRegistry(vs, embeddings, settings)
-    agent = ChatAgent(registry, settings)
+    agent = ChatAgent(registry, settings, system_prompt=system_prompt)
 
     print(f"RAG Chat — database: {settings.db_path}")
     print("Type 'exit' or Ctrl-D to quit. Type '/reset' to clear history.\n")
@@ -175,12 +206,13 @@ def main() -> None:
         help="Dotted path to a Pydantic model class for structured extraction, e.g. examples.arm_isa.ISAInstruction. "
              "Omit for a free-form RAG answer.",
     )
-    p_query.add_argument("--system-prompt", default=None)
+    _add_prompt_args(p_query)
     _add_common_args(p_query)
     _add_inference_args(p_query)
 
     # chat
     p_chat = sub.add_parser("chat", help="Interactive RAG chat session")
+    _add_prompt_args(p_chat)
     _add_common_args(p_chat)
     _add_inference_args(p_chat)
 
