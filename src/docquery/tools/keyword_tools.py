@@ -47,7 +47,7 @@ def _keyword_search(vector_store: Chroma, query: str) -> list[dict]:
     docs = raw.get("documents") or []
     metadatas = raw.get("metadatas") or []
 
-    resluts: list[dict] = []
+    results: list[dict] = []
     for content, meta in zip(docs, metadatas, strict=False):
         if not content:
             continue

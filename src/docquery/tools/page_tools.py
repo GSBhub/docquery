@@ -35,7 +35,7 @@ def _page_lookup(vector_store: Chroma, page_num: int) -> list[dict]:
     """ Return all chunks wohse metadata.page equals the given page number."""
 
     try:
-        collection = vector_store._colleciton # type: ignore[attr-defined]
+        collection = vector_store._collection # type: ignore[attr-defined]
     except Exception:
         logger.error("page_lookup: underlying ChromaDB collection not available")
         return []

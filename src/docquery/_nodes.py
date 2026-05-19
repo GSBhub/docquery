@@ -7,8 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from docquery.config import Settings
-from docquery.pipeline.state import ExtractionState
-from docquery.tools.retrieval_tools import make_similarity_tool
+from docquery._state import ExtractionState
 
 logger = logging.getLogger(__name__)
 

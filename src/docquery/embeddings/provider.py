@@ -35,7 +35,7 @@ def get_embeddings(settings: Settings | None = None) -> Embeddings:
     # for not openai api endpoints (ie, self-hosted, ollama)
     extra_kwargs: dict[str, object] = {}
     if _is_non_openai_base_url(settings.embed_base_url):
-        extra_kwags["check_embedding_ctx_length"] = False
+        extra_kwargs["check_embedding_ctx_length"] = False
 
     return OpenAIEmbeddings(
         model=settings.embed_model,
