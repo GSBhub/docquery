@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock
 
 import chromadb
@@ -31,7 +32,7 @@ def vector_store(mock_embeddings):
     client = chromadb.EphemeralClient()
     store = Chroma(
         client=client,
-        collection_name="test_collection",
+        collection_name=f"test_{uuid.uuid4().hex}",
         embedding_function=mock_embeddings,
     )
     yield store
