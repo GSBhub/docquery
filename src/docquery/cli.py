@@ -1,9 +1,15 @@
 import argparse
 import importlib
 import json
-import sys
-from pathlib import Path
+import chromadb
 
+from pathlib import Path
+from uuid import uuid4
+
+from docquery.embeddings.provider import get_embeddings
+from langchain_unstructured import UnstructuredLoader
+from langchain_chroma.vectorstores import Chroma
+from langchain_community.vectorstores.utils import filter_complex_metadata
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -47,45 +53,51 @@ def _resolve_system_prompt(args: argparse.Namespace) -> str | None:
 def _apply_overrides(args: argparse.Namespace, settings) -> None:
     if args.db:
         settings.db_path = args.db
+        settings.db_client = chromadb.PersistentClient(path=settings.db_path)
+    else:
+        # in-memory ChromaDB
+        settings.db_path = None
+        settings.db_client = chromadb.Client()
+
     if getattr(args, "top_k", None) is not None:
         settings.top_k = args.top_k
     if getattr(args, "temperature", None) is not None:
         settings.temperature = args.temperature
+    
+    embeddings = get_embeddings(settings)
 
+    settings.vs = Chroma(
+            client=settings.db_client,
+            collection_name="db_knowledge",
+            embedding_function=embeddings,
+            )
 
 def cmd_ingest(args: argparse.Namespace) -> None:
     from docquery.config import Settings
-    from docquery.embeddings.provider import get_embeddings
-    from docquery.ingestion import chunker, pdf_loader, text_loader
-    from docquery.storage.vector_store import VectorStore
 
     settings = Settings()
     _apply_overrides(args, settings)
-    if getattr(args, "chunk_size", None) is not None:
-        settings.chunk_size = args.chunk_size
-    if getattr(args, "chunk_overlap", None) is not None:
-        settings.chunk_overlap = args.chunk_overlap
 
-    embeddings = get_embeddings(settings)
-    sample = embeddings.embed_query("probe")
-    dim = len(sample)
+    docs = []
 
-    vs = VectorStore(settings.db_path, embedding_dim=dim)
-    total_inserted = total_skipped = 0
-    for file_path in args.files:
-        if file_path.lower().endswith(".pdf"):
-            docs = pdf_loader.load(file_path)
-        else:
-            docs = text_loader.load(file_path)
-        chunks = chunker.chunk(docs, settings)
-        inserted, skipped = vs.add_chunks(chunks, embeddings, batch_size=settings.embed_batch_size)
-        print(f"  {file_path}: {inserted} new chunks, {skipped} duplicates skipped")
-        total_inserted += inserted
-        total_skipped += skipped
-    total = vs.get_chunk_count()
-    vs.close()
-    print(f"Done — {total_inserted} new, {total_skipped} skipped. DB total: {total} chunks ({settings.db_path})")
+    loader = UnstructuredLoader(args.files,
+                                chunking_strategy="by_title",
+                                # chroma's chunk size limit is 5461
+                                max_characters=2000
+                                )
 
+    # lazy load in case we get a lot of big docs
+    docs_lazy = loader.lazy_load()
+
+    for doc in docs_lazy:
+        docs.append(
+                doc
+                )
+
+    # filter metadata, chromadb doesn't handle complex metadata
+    settings.vs.add_documents(documents=filter_complex_metadata(docs))
+
+    print(f"Done - Docs added to {settings.vs.collection_name} collection: {len(docs)}")
 
 def cmd_query(args: argparse.Namespace) -> None:
     from docquery.config import Settings
@@ -97,15 +109,10 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     if not args.schema:
         # No Pydantic schema supplied — run a one-shot RAG answer
-        from docquery.embeddings.provider import get_embeddings
         from docquery.pipeline.chat import ChatAgent
-        from docquery.storage.vector_store import VectorStore
         from docquery.tools.registry import ToolRegistry
 
-        embeddings = get_embeddings(settings)
-        dim = len(embeddings.embed_query("probe"))
-        vs = VectorStore(settings.db_path, embedding_dim=dim)
-        registry = ToolRegistry(vs, embeddings, settings)
+        registry = ToolRegistry(settings.vs, settings)
         agent = ChatAgent(registry, settings, system_prompt=system_prompt)
         print(agent.chat(args.prompt))
         vs.close()
@@ -143,21 +150,14 @@ def cmd_query(args: argparse.Namespace) -> None:
 
 def cmd_chat(args: argparse.Namespace) -> None:
     from docquery.config import Settings
-    from docquery.embeddings.provider import get_embeddings
     from docquery.pipeline.chat import ChatAgent
-    from docquery.storage.vector_store import VectorStore
     from docquery.tools.registry import ToolRegistry
 
     settings = Settings()
     _apply_overrides(args, settings)
     system_prompt = _resolve_system_prompt(args)
 
-    embeddings = get_embeddings(settings)
-    sample = embeddings.embed_query("probe")
-    dim = len(sample)
-
-    vs = VectorStore(settings.db_path, embedding_dim=dim)
-    registry = ToolRegistry(vs, embeddings, settings)
+    registry = ToolRegistry(settings.vs, settings)
     agent = ChatAgent(registry, settings, system_prompt=system_prompt)
 
     print(f"RAG Chat — database: {settings.db_path}")
