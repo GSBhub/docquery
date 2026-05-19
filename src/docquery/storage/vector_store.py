@@ -111,7 +111,7 @@ class VectorStore:
                     (h, chunk.page_content, chunk.metadata.get("source", ""), chunk.metadata.get("page", 0), chunk.metadata.get("chunk_index", 0)),
                 )
                 rowid = cur.lastrowid
-                embedding_blob = struct.pack(f"{len(vec)}f", *vec)
+                embedding_blob = struct.pack(f"{len(vec)}d", *vec)
                 cur.execute(
                     "INSERT INTO chunk_embeddings (rowid, embedding) VALUES (?, ?)",
                     (rowid, embedding_blob),
@@ -137,7 +137,7 @@ class VectorStore:
             return []
 
         scored = []
-        fmt = f"{self._dim}f"
+        fmt = f"{self._dim}d"
         for row in rows:
             vec = list(struct.unpack(fmt, row["embedding"]))
             sim = _cosine_sim(query_vec, vec)
