@@ -5,8 +5,8 @@ import pytest
 from pydantic import BaseModel
 
 from docquery.config import Settings
-from docquery.pipeline.nodes import make_extraction_nodes
-from docquery.pipeline.state import ExtractionState
+from docquery._nodes import make_extraction_nodes
+from docquery._state import ExtractionState
 
 
 class SimpleModel(BaseModel):

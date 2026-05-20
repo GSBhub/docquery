@@ -2,15 +2,14 @@ import logging
 
 from langchain_core.tools import Tool
 
-from docquery.storage.vector_store import VectorStore
+from langchain_chroma.vectorstores import Chroma
 
 logger = logging.getLogger(__name__)
 
 
-def make_keyword_tool(vector_store: VectorStore) -> Tool:
+def make_keyword_tool(vector_store: Chroma) -> Tool:
     def _search(query: str) -> str:
-        logger.debug("keyword_search FTS5 query=%r", query)
-        results = vector_store.keyword_search(query)
+        results = _keyword_search(vector_store, query)
         logger.info("keyword_search: query=%r, returned %d matches", query, len(results))
         if not results:
             return f"No exact matches found for: {query!r}"
@@ -29,3 +28,38 @@ def make_keyword_tool(vector_store: VectorStore) -> Tool:
         ),
         func=_search,
     )
+
+
+def _keyword_search(vector_store: Chroma, query: str) -> list[dict]:
+    """Return docs whose content contains the query as a substring.
+
+    Implemented on top of ChromaDB collection by scanning
+    documents and filtering by substring.
+    """
+
+    try:
+        collection = vector_store._collection # type: ignore[attr-defined]
+    except Exception:
+        logger.error("keyword_search: underlying Chromadb collection not available")
+        return []
+
+    raw = collection.get()
+    docs = raw.get("documents") or []
+    metadatas = raw.get("metadatas") or []
+
+    results: list[dict] = []
+    for content, meta in zip(docs, metadatas, strict=False):
+        if not content:
+            continue
+        if query not in content:
+            continue
+        meta = meta or {}
+        results.append(
+                {
+                    "content": content,
+                    "source": meta.get("source"),
+                    "page": meta.get("page"),
+                }
+            )
+
+    return results

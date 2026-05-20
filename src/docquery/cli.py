@@ -1,17 +1,20 @@
 import argparse
 import importlib
 import json
-import sys
+import chromadb
+
 from pathlib import Path
+
+from langchain_chroma.vectorstores import Chroma
+from docquery.embeddings.provider import get_embeddings
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    parser.add_argument("--db", default=None, help="Path to SQLite database (overrides DB_PATH env var)")
+    parser.add_argument("--db", default=None, help="Path to ChromaDB directory (overrides DB_PATH env var)")
 
 
 def _add_inference_args(parser: argparse.ArgumentParser) -> None:
-    """Args that control retrieval and LLM behaviour for chat/query commands."""
     parser.add_argument("--top-k", type=int, default=None, metavar="K",
                         help="Number of similarity results to retrieve (overrides TOP_K env var)")
     parser.add_argument("--temperature", type=float, default=None,
@@ -19,7 +22,6 @@ def _add_inference_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_prompt_args(parser: argparse.ArgumentParser) -> None:
-    """--system-prompt and --preset for chat/query subcommands."""
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--system-prompt", default=None, metavar="TEXT",
                        help="Override the default system prompt with TEXT")
@@ -47,71 +49,52 @@ def _resolve_system_prompt(args: argparse.Namespace) -> str | None:
 def _apply_overrides(args: argparse.Namespace, settings) -> None:
     if args.db:
         settings.db_path = args.db
+        settings.db_client = chromadb.PersistentClient(path=settings.db_path)
+    else:
+        settings.db_path = None
+        settings.db_client = chromadb.EphemeralClient()
+
     if getattr(args, "top_k", None) is not None:
         settings.top_k = args.top_k
     if getattr(args, "temperature", None) is not None:
         settings.temperature = args.temperature
 
+    settings.vs = Chroma(
+        client=settings.db_client,
+        collection_name="db_knowledge",
+        embedding_function=get_embeddings(settings),
+    )
+
 
 def cmd_ingest(args: argparse.Namespace) -> None:
     from docquery.config import Settings
-    from docquery.embeddings.provider import get_embeddings
-    from docquery.ingestion import chunker, pdf_loader, text_loader
-    from docquery.storage.vector_store import VectorStore
+    import docquery
 
     settings = Settings()
     _apply_overrides(args, settings)
+
     if getattr(args, "chunk_size", None) is not None:
         settings.chunk_size = args.chunk_size
     if getattr(args, "chunk_overlap", None) is not None:
         settings.chunk_overlap = args.chunk_overlap
 
-    embeddings = get_embeddings(settings)
-    sample = embeddings.embed_query("probe")
-    dim = len(sample)
-
-    vs = VectorStore(settings.db_path, embedding_dim=dim)
-    total_inserted = total_skipped = 0
-    for file_path in args.files:
-        if file_path.lower().endswith(".pdf"):
-            docs = pdf_loader.load(file_path)
-        else:
-            docs = text_loader.load(file_path)
-        chunks = chunker.chunk(docs, settings)
-        inserted, skipped = vs.add_chunks(chunks, embeddings, batch_size=settings.embed_batch_size)
-        print(f"  {file_path}: {inserted} new chunks, {skipped} duplicates skipped")
-        total_inserted += inserted
-        total_skipped += skipped
-    total = vs.get_chunk_count()
-    vs.close()
-    print(f"Done — {total_inserted} new, {total_skipped} skipped. DB total: {total} chunks ({settings.db_path})")
+    count = docquery.ingest(args.files, settings=settings)
+    print(f"Done — {count} documents added to {settings.vs._collection_name} collection")
 
 
 def cmd_query(args: argparse.Namespace) -> None:
     from docquery.config import Settings
+    import docquery
 
     settings = Settings()
     _apply_overrides(args, settings)
-
     system_prompt = _resolve_system_prompt(args)
 
     if not args.schema:
-        # No Pydantic schema supplied — run a one-shot RAG answer
-        from docquery.embeddings.provider import get_embeddings
-        from docquery.pipeline.chat import ChatAgent
-        from docquery.storage.vector_store import VectorStore
-        from docquery.tools.registry import ToolRegistry
-
-        embeddings = get_embeddings(settings)
-        dim = len(embeddings.embed_query("probe"))
-        vs = VectorStore(settings.db_path, embedding_dim=dim)
-        registry = ToolRegistry(vs, embeddings, settings)
-        agent = ChatAgent(registry, settings, system_prompt=system_prompt)
-        print(agent.chat(args.prompt))
-        vs.close()
+        result = docquery.query(args.prompt, settings=settings, system_prompt=system_prompt)
+        print(result)
         return
 
-    # Structured extraction mode: --schema must be a dotted Python class path
     if "." not in args.schema:
         print(
             f"Error: --schema must be a dotted Python class path, e.g. examples.arm_isa.ISAInstruction\n"
@@ -121,8 +104,6 @@ def cmd_query(args: argparse.Namespace) -> None:
         )
         raise SystemExit(1)
 
-    from docquery.pipeline.extractor import ExtractionPipeline
-
     module_path, class_name = args.schema.rsplit(".", 1)
     try:
         module = importlib.import_module(module_path)
@@ -131,34 +112,24 @@ def cmd_query(args: argparse.Namespace) -> None:
         raise SystemExit(1)
     output_model = getattr(module, class_name)
 
-    pipeline = ExtractionPipeline(
-        db_path=settings.db_path,
-        output_model=output_model,
+    result = docquery.query(
+        args.prompt,
+        schema=output_model,
         system_prompt=system_prompt or f"Extract structured data matching the {class_name} schema.",
         settings=settings,
     )
-    result = pipeline.run(args.prompt)
     print(result.model_dump_json(indent=2))
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
     from docquery.config import Settings
-    from docquery.embeddings.provider import get_embeddings
-    from docquery.pipeline.chat import ChatAgent
-    from docquery.storage.vector_store import VectorStore
-    from docquery.tools.registry import ToolRegistry
+    import docquery
 
     settings = Settings()
     _apply_overrides(args, settings)
     system_prompt = _resolve_system_prompt(args)
 
-    embeddings = get_embeddings(settings)
-    sample = embeddings.embed_query("probe")
-    dim = len(sample)
-
-    vs = VectorStore(settings.db_path, embedding_dim=dim)
-    registry = ToolRegistry(vs, embeddings, settings)
-    agent = ChatAgent(registry, settings, system_prompt=system_prompt)
+    session = docquery.chat_session(settings=settings, system_prompt=system_prompt)
 
     print(f"RAG Chat — database: {settings.db_path}")
     print("Type 'exit' or Ctrl-D to quit. Type '/reset' to clear history.\n")
@@ -173,13 +144,13 @@ def cmd_chat(args: argparse.Namespace) -> None:
             if user_input.lower() == "exit":
                 break
             if user_input == "/reset":
-                agent.reset()
+                session.reset()
                 print("(history cleared)")
                 continue
-            response = agent.chat(user_input)
+            response = session.chat(user_input)
             print(f"Agent: {response}\n")
     finally:
-        vs.close()
+        pass
 
 
 def main() -> None:
@@ -188,7 +159,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ingest
-    p_ingest = sub.add_parser("ingest", help="Ingest one or more PDFs into the vector database")
+    p_ingest = sub.add_parser("ingest", help="Ingest one or more files into the vector database")
     p_ingest.add_argument("files", nargs="+", metavar="FILE",
                           help="One or more PDF or plain-text/code files to ingest")
     p_ingest.add_argument("--chunk-size", type=int, default=None,
@@ -197,7 +168,7 @@ def main() -> None:
                           help="Overlap between chunks (overrides CHUNK_OVERLAP env var)")
     _add_common_args(p_ingest)
 
-    # query (free-form answer or structured extraction)
+    # query
     p_query = sub.add_parser(
         "query",
         help="Ask a one-shot question (omit --schema) or extract structured data (provide --schema)",
@@ -207,8 +178,8 @@ def main() -> None:
         "--schema",
         default=None,
         metavar="MODULE.ClassName",
-        help="Dotted path to a Pydantic model class for structured extraction, e.g. examples.arm_isa.ISAInstruction. "
-             "Omit for a free-form RAG answer.",
+        help="Dotted path to a Pydantic model class for structured extraction, "
+             "e.g. examples.arm_isa.ISAInstruction. Omit for a free-form RAG answer.",
     )
     _add_prompt_args(p_query)
     _add_common_args(p_query)

@@ -17,7 +17,7 @@ Two modes share a single SQLite vector database:
 uv sync
 
 # Copy and edit the environment config
-cp .env.example .env   # or create .env directly (see Configuration below)
+cp env.template .env   # then edit .env as needed (see Configuration below)
 ```
 
 ## Configuration
@@ -147,52 +147,88 @@ See `examples/arm_isa.py` for a complete `ISAInstruction` example.
 
 ---
 
-## Adding custom tools (skills)
+## Library usage
 
-Register any LangChain `Tool` with the `ToolRegistry` to extend the chat agent:
+The three public functions cover all use cases. `Settings` is constructed from env vars / `.env` automatically if not provided.
+
+### Ingest
+
+```python
+import docquery
+from docquery.config import Settings
+
+settings = Settings()
+settings.db_path = "my_manual.db"
+
+# accepts file paths (str or Path) and/or pre-loaded LangChain Documents
+count = docquery.ingest(["manual.pdf", "supplement.pdf"], settings=settings)
+print(f"{count} chunks ingested")
+```
+
+### One-shot query
+
+```python
+import docquery
+
+# free-form answer
+answer = docquery.query(
+    "What does the MOV instruction do?",
+    settings=settings,
+)
+print(answer)
+```
+
+### Structured extraction
+
+```python
+from pydantic import BaseModel
+import docquery
+
+class Instruction(BaseModel):
+    mnemonic: str
+    operands: list[str]
+    description: str
+
+result = docquery.query(
+    "Extract the LDR instruction encoding and operands",
+    schema=Instruction,
+    settings=settings,
+)
+print(result.model_dump_json(indent=2))
+```
+
+### Stateful chat session
+
+```python
+import docquery
+
+session = docquery.chat_session(settings=settings)
+
+print(session.chat("What are the load/store instructions?"))
+print(session.chat("And how do they handle byte vs halfword access?"))
+
+session.reset()  # clear conversation history
+```
+
+### Custom tools
+
+Register any LangChain `Tool` with `ToolRegistry` before creating a chat session:
 
 ```python
 from langchain_core.tools import Tool
 from docquery.config import Settings
-from docquery.embeddings.provider import get_embeddings
-from docquery.storage.vector_store import VectorStore
 from docquery.tools.registry import ToolRegistry
-from docquery.pipeline.chat import ChatAgent
+from docquery._chat import ChatAgent
 
 def my_tool_fn(query: str) -> str:
     return f"custom result for: {query}"
 
 settings = Settings()
-vs = VectorStore(settings.db_path, embedding_dim=768)
-registry = ToolRegistry(vs, get_embeddings(settings), settings)
+registry = ToolRegistry(settings.vs, settings)
 registry.register(Tool(name="my_tool", description="...", func=my_tool_fn))
 
 agent = ChatAgent(registry, settings)
 print(agent.chat("your question here"))
-```
-
----
-
-## Building your own extraction pipeline
-
-Subclass or instantiate `ExtractionPipeline` with your own Pydantic model and system prompt:
-
-```python
-from pydantic import BaseModel
-from docquery.pipeline.extractor import ExtractionPipeline
-
-class MySchema(BaseModel):
-    field_a: str
-    field_b: list[str]
-
-pipeline = ExtractionPipeline(
-    db_path="my_manual.db",
-    output_model=MySchema,
-    system_prompt="Extract ... from the document. Return only JSON.",
-)
-
-result = pipeline.run("your query here")
-print(result.model_dump_json(indent=2))
 ```
 
 ---
@@ -224,25 +260,21 @@ Tests use mock embeddings (no API calls required) and a temporary SQLite databas
 
 ```
 src/docquery/
+├── __init__.py             # public API: ingest(), query(), chat_session()
 ├── cli.py                  # ingest / chat / query subcommands
 ├── config.py               # Settings from env / .env
 ├── logging_config.py       # setup_logging()
-├── ingestion/
-│   ├── pdf_loader.py       # PyMuPDF + pytesseract OCR fallback
-│   └── chunker.py          # RecursiveCharacterTextSplitter
-├── storage/
-│   └── vector_store.py     # SQLite + sqlite-vec (KNN) + FTS5 (keyword)
+├── _ingest.py              # PDF loading, chunking, ChromaDB population
+├── _extractor.py           # ExtractionPipeline (structured Pydantic output)
+├── _chat.py                # ChatAgent + ChatSession (LangGraph ReAct loop)
+├── _nodes.py               # retrieve / extract / validate / retry graph nodes
+├── _state.py               # ExtractionState, ChatState TypedDicts
 ├── embeddings/
 │   ├── provider.py         # get_embeddings() — OpenAI or Ollama
 │   └── llm.py              # get_llm() — OpenAI or Ollama
-├── tools/
-│   ├── retrieval_tools.py  # similarity_search tool
-│   ├── page_tools.py       # page_lookup tool
-│   ├── keyword_tools.py    # keyword_search tool
-│   └── registry.py         # ToolRegistry with .register()
-└── pipeline/
-    ├── state.py            # ExtractionState, ChatState TypedDicts
-    ├── nodes.py            # retrieve / extract / validate / retry nodes
-    ├── extractor.py        # ExtractionPipeline
-    └── chat.py             # ChatAgent (LangGraph ReAct loop)
+└── tools/
+    ├── retrieval_tools.py  # similarity_search tool
+    ├── page_tools.py       # page_lookup tool
+    ├── keyword_tools.py    # keyword_search tool
+    └── registry.py         # ToolRegistry with .register()
 ```

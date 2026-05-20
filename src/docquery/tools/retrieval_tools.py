@@ -1,29 +1,43 @@
 import logging
 
-from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
 from langchain_core.tools import Tool
 
+from langchain_chroma.vectorstores import Chroma
+
 from docquery.config import Settings
-from docquery.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
 
-def make_similarity_tool(vector_store: VectorStore, embeddings: Embeddings, settings: Settings | None = None) -> Tool:
+def make_similarity_tool(vector_store: Chroma, settings: Settings | None = None) -> Tool:
     if settings is None:
         settings = Settings()
     k = settings.top_k
 
     def _search(query: str) -> str:
-        vec = embeddings.embed_query(query)
-        logger.debug("similarity_search embedding norm=%.4f", sum(v**2 for v in vec) ** 0.5)
-        results = vector_store.similarity_search(vec, k=k)
+        results = vector_store.similarity_search(query, k=k)
         logger.info("similarity_search: query=%r, returned %d results", query, len(results))
         if not results:
             return "No relevant content found."
-        parts = []
+        parts: list[str] = []
         for r in results:
-            parts.append(f"[Source: {r['source']}, Page: {r['page']}]\n{r['content']}")
+            if isinstance(r, Document):
+                meta = r.metadata or {}
+                source = meta.get("source", "unknown")
+                page = meta.get("page", "?")
+                content = r.page_content
+            else: 
+                # fallback for dict-like results
+                try:
+                    meta = r # type: ignore[assignment]
+                except Exception:
+                    meta = {}
+                source = meta.get("source", "unknown")
+                page = meta.get("page", "?")
+                content = meta.get("content", "")
+            parts.append(f"[Source: {source}, Page {page}\n{content}")
+
         return "\n\n---\n\n".join(parts)
 
     return Tool(

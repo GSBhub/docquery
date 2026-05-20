@@ -5,7 +5,7 @@ from langgraph.graph import END, START, StateGraph
 
 from docquery.config import Settings
 from docquery.embeddings.llm import get_llm
-from docquery.pipeline.state import ChatState
+from docquery._state import ChatState
 from docquery.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,6 @@ class ChatAgent:
 
         def agent(state: ChatState) -> ChatState:
             from langchain_core.messages import SystemMessage
-            # Prepend system prompt on every call so history stays clean
             messages = [SystemMessage(content=system_msg)] + list(state["messages"])
             logger.debug("ChatAgent/agent: %d messages", len(messages))
             response = self._llm_with_tools.invoke(messages)
@@ -90,3 +89,16 @@ class ChatAgent:
 
     def reset(self) -> None:
         self._history = []
+
+
+class ChatSession:
+    """Public-facing stateful chat session returned by docquery.chat_session()."""
+
+    def __init__(self, agent: ChatAgent) -> None:
+        self._agent = agent
+
+    def chat(self, message: str) -> str:
+        return self._agent.chat(message)
+
+    def reset(self) -> None:
+        self._agent.reset()

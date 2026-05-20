@@ -1,22 +1,25 @@
+import uuid
 from unittest.mock import MagicMock
 
+import chromadb
 import pytest
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 
 from docquery.config import Settings
 
 
 @pytest.fixture
-def settings(tmp_path):
+def settings():
     s = Settings()
-    s.db_path = str(tmp_path / "test.db")
-    s.embed_batch_size = 4
     s.top_k = 3
+    s.max_retries = 3
     return s
 
 
 @pytest.fixture
 def mock_embeddings():
-    """Returns fixed-length zero vectors (dim=8) for testing without an API."""
+    """Returns fixed 8-dim vectors for testing without an API."""
     emb = MagicMock()
     emb.embed_documents.side_effect = lambda texts: [[0.1 * i for i in range(8)] for _ in texts]
     emb.embed_query.return_value = [0.1 * i for i in range(8)]
@@ -24,24 +27,30 @@ def mock_embeddings():
 
 
 @pytest.fixture
-def vector_store(settings, mock_embeddings):
-    from docquery.storage.vector_store import VectorStore
-    vs = VectorStore(settings.db_path, embedding_dim=8)
-    yield vs
-    vs.close()
+def vector_store(mock_embeddings):
+    """Ephemeral in-memory Chroma store — no disk I/O, isolated per test."""
+    client = chromadb.EphemeralClient()
+    store = Chroma(
+        client=client,
+        collection_name=f"test_{uuid.uuid4().hex}",
+        embedding_function=mock_embeddings,
+    )
+    yield store
 
 
 @pytest.fixture
-def sample_chunks():
-    from langchain_core.documents import Document
+def sample_documents():
     return [
-        Document(page_content="The MOV instruction copies a value.", metadata={"source": "test.pdf", "page": 1, "chunk_index": 0}),
-        Document(page_content="The LDR instruction loads from memory.", metadata={"source": "test.pdf", "page": 2, "chunk_index": 0}),
-        Document(page_content="Opcode 0xfe 0xed is a special encoding.", metadata={"source": "test.pdf", "page": 3, "chunk_index": 0}),
+        Document(page_content="The MOV instruction copies a value.",
+                 metadata={"source": "test.pdf", "page": 1}),
+        Document(page_content="The LDR instruction loads from memory.",
+                 metadata={"source": "test.pdf", "page": 2}),
+        Document(page_content="Opcode 0xfe 0xed is a special encoding.",
+                 metadata={"source": "test.pdf", "page": 3}),
     ]
 
 
 @pytest.fixture
-def populated_store(vector_store, sample_chunks, mock_embeddings):
-    vector_store.add_chunks(sample_chunks, mock_embeddings, batch_size=4)
+def populated_store(vector_store, sample_documents):
+    vector_store.add_documents(sample_documents)
     return vector_store
