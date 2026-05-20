@@ -79,7 +79,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         settings.chunk_overlap = args.chunk_overlap
 
     count = docquery.ingest(args.files, settings=settings)
-    print(f"Done — {count} documents added to {settings.vs.collection_name} collection")
+    print(f"Done — {count} documents added to {settings.vs._collection_name} collection")
 
 
 def cmd_query(args: argparse.Namespace) -> None:
