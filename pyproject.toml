@@ -38,6 +38,9 @@ dependencies = [
 [project.scripts]
 docquery = "docquery.cli:main"
 
+[project.optional-dependencies]
+anthropic = ["langchain-anthropic>=0.3"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
