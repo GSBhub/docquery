@@ -25,6 +25,8 @@ class Settings:
     max_retries: int = field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     top_k: int = field(default_factory=lambda: int(os.getenv("TOP_K", "5")))
     temperature: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0")))
+    llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "120")))
+    llm_num_predict: int = field(default_factory=lambda: int(os.getenv("LLM_NUM_PREDICT", "2048")))
 
     def __post_init__(self) -> None:
         if not self.embed_base_url:
