@@ -2,6 +2,7 @@ import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 
 from docquery.config import Settings
 from docquery.embeddings.llm import get_llm
@@ -43,6 +44,7 @@ class ChatAgent:
     def _build_graph(self):
         system_msg = self._system_prompt
 
+        @traceable(name="agent")
         def agent(state: ChatState) -> ChatState:
             from langchain_core.messages import SystemMessage
             messages = [SystemMessage(content=system_msg)] + list(state["messages"])
@@ -53,6 +55,7 @@ class ChatAgent:
                     logger.info("Tool call: %s(%s)", tc["name"], str(tc.get("args", {}))[:120])
             return {"messages": state["messages"] + [response]}
 
+        @traceable(name="execute_tools")
         def execute_tools(state: ChatState) -> ChatState:
             last = state["messages"][-1]
             new_messages = list(state["messages"])
@@ -80,6 +83,7 @@ class ChatAgent:
         graph.add_edge("execute_tools", "agent")
         return graph.compile()
 
+    @traceable(name="chat")
     def chat(self, user_message: str) -> str:
         self._history.append(HumanMessage(content=user_message))
         final = self._graph.invoke({"messages": self._history})

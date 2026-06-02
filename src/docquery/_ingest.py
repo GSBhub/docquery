@@ -5,6 +5,7 @@ import chromadb
 from langchain_chroma.vectorstores import Chroma
 from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
+from langsmith import traceable
 
 from docquery.config import Settings
 from docquery.embeddings.provider import get_embeddings
@@ -31,6 +32,7 @@ def _build_chroma(settings: Settings, collection_name: str = "db_knowledge") -> 
     return settings.vs
 
 
+@traceable(name="ingest_documents")
 def ingest_documents(
     items: list,
     settings: Settings,
