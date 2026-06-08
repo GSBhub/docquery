@@ -88,7 +88,12 @@ def ingest_documents(
         loader = UnstructuredLoader(
             [str(p) for p in file_paths],
             chunking_strategy="by_title",
-            max_characters=2000,
+            max_characters=settings.chunk_size,
+            # Overlap carries the tail of each chunk into the next so a heading
+            # (e.g. an instruction number) split across a boundary still appears
+            # intact in one chunk — important for entity enumeration.
+            overlap=settings.chunk_overlap,
+            overlap_all=bool(settings.chunk_overlap),
         )
         docs.extend(loader.lazy_load())
 

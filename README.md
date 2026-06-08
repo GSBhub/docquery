@@ -64,8 +64,8 @@ LLM_MODEL=gpt-4o-mini
 | `LLM_API_KEY` | — | API key |
 | `LLM_MODEL` | `gpt-4o-mini` | LLM model name |
 | `DB_PATH` | `rag.db` | SQLite database file |
-| `CHUNK_SIZE` | `1000` | Characters per chunk |
-| `CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `CHUNK_SIZE` | `2000` | Max characters per chunk (Unstructured `max_characters`) |
+| `CHUNK_OVERLAP` | `200` | Characters carried between chunks; keeps headings split across a boundary intact for entity enumeration |
 | `TOP_K` | `5` | Similarity results returned per search |
 | `MAX_RETRIES` | `3` | Max extraction retries on validation error |
 

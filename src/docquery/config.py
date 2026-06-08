@@ -57,7 +57,7 @@ class Settings:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
 
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "rag.db"))
-    chunk_size: int = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "1000")))
+    chunk_size: int = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "2000")))
     chunk_overlap: int = field(default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "200")))
     max_retries: int = field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     top_k: int = field(default_factory=lambda: int(os.getenv("TOP_K", "5")))
