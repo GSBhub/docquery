@@ -8,7 +8,7 @@ from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
 from langsmith import traceable
 
-from docquery.config import EntityRule, Settings
+from docquery.config import ENTITY_PREFIX, EntityRule, Settings
 from docquery.embeddings.provider import get_embeddings
 
 logger = logging.getLogger(__name__)
@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 def tag_entities(docs: list[Document], rules: list[EntityRule]) -> list[Document]:
     """Tag chunks with structural entity metadata in place.
 
-    For each chunk, the first rule whose pattern matches sets
-    ``entity_type=<rule.name>`` and ``entity_name=<match>`` on the chunk's
-    metadata, so cursor_enumerate can later walk every entity of a type.
-    Chunks that match no rule are left untouched. Returns the same list.
+    For each rule, ALL distinct matches in a chunk are recorded (a single
+    Unstructured chunk can contain several short entities, e.g. two instruction
+    headings) under metadata key ``entity_<rule.name>`` as a ";"-joined string.
+    cursor_enumerate then yields one item per distinct entity. Chunks matching
+    no rule are left untouched. Returns the same list.
     """
     if not rules:
         return docs
@@ -28,14 +29,20 @@ def tag_entities(docs: list[Document], rules: list[EntityRule]) -> list[Document
     tagged = 0
     for d in docs:
         text = d.page_content or ""
+        meta = dict(d.metadata or {})
+        matched = False
         for name, rx in compiled:
-            m = rx.search(text)
-            if not m:
-                continue
-            ent = (m.group(1) if m.groups() else m.group(0)).strip()
-            d.metadata = {**(d.metadata or {}), "entity_type": name, "entity_name": ent}
+            found: list[str] = []
+            for m in rx.finditer(text):
+                ent = (m.group(1) if m.groups() else m.group(0)).strip()
+                if ent and ent not in found:
+                    found.append(ent)
+            if found:
+                meta[f"{ENTITY_PREFIX}{name}"] = ";".join(found)
+                matched = True
+        if matched:
+            d.metadata = meta
             tagged += 1
-            break
     logger.info("tag_entities: tagged %d/%d chunks using %d rule(s)", tagged, len(docs), len(rules))
     return docs
 

@@ -6,7 +6,7 @@ from langchain_core.tools import BaseTool, tool
 
 from langchain_chroma.vectorstores import Chroma
 
-from docquery.config import Settings
+from docquery.config import ENTITY_PREFIX, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -141,16 +141,37 @@ Calling this with an unknown type lists the available types."""
             logger.error("cursor_enumerate: underlying ChromaDB collection not available")
             return "Cursor unavailable: the document store could not be accessed."
 
-        raw = collection.get(where={"entity_type": entity_type},
-                             include=["documents", "metadatas"])
+        key = f"{ENTITY_PREFIX}{entity_type}"
+        raw = collection.get(include=["documents", "metadatas"])
         docs = raw.get("documents") or []
         metas = raw.get("metadatas") or []
         ids = raw.get("ids") or []
 
-        if not docs:
-            all_meta = collection.get(include=["metadatas"]).get("metadatas") or []
-            types = sorted({m.get("entity_type") for m in all_meta
-                            if m and m.get("entity_type")})
+        # one item per DISTINCT entity name (a chunk may list several, ";"-joined)
+        items: list[dict] = []
+        seen: set[str] = set()
+        for cid, content, meta in zip(ids, docs, metas, strict=False):
+            meta = meta or {}
+            val = meta.get(key)
+            if not val:
+                continue
+            for ename in str(val).split(";"):
+                ename = ename.strip()
+                if not ename or ename in seen:
+                    continue
+                seen.add(ename)
+                items.append({
+                    "id": cid,
+                    "content": content,
+                    "source": meta.get("source"),
+                    "page": meta.get("page"),
+                    "entity_name": ename,
+                    "_order": len(items),
+                })
+
+        if not items:
+            types = sorted({k[len(ENTITY_PREFIX):] for m in metas if m
+                            for k in m if k.startswith(ENTITY_PREFIX)})
             if types:
                 return (f"No entities of type {entity_type!r}. "
                         f"Available types: {', '.join(types)}.")
@@ -158,23 +179,6 @@ Calling this with an unknown type lists the available types."""
                     "rules (Settings.entity_rules or the --entity CLI flag) to enable "
                     "cursor_enumerate.")
 
-        items: list[dict] = []
-        seen: set[str] = set()
-        for cid, content, meta in zip(ids, docs, metas, strict=False):
-            meta = meta or {}
-            ename = meta.get("entity_name") or ""
-            key = ename or cid
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append({
-                "id": cid,
-                "content": content,
-                "source": meta.get("source"),
-                "page": meta.get("page"),
-                "entity_name": ename,
-                "_order": len(items),
-            })
         items.sort(key=_page_sort_key)
         for it in items:
             it.pop("_order", None)

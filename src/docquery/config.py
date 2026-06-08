@@ -9,6 +9,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Metadata key prefix for structural entity tags: entity_<type> = ";"-joined names.
+ENTITY_PREFIX = "entity_"
+
 
 @dataclass
 class EntityRule:
