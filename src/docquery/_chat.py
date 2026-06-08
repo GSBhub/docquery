@@ -20,6 +20,10 @@ SEARCH STRATEGY — follow this order every time:
 2. If similarity_search does not give enough detail, call it again with a more specific query, \
 or call keyword_search for exact identifiers (e.g. specific terms, codes, or mnemonics).
 3. Use page_lookup only when the user mentions a specific page number.
+4. To enumerate or iterate over EVERY instance of something (e.g. "list every \
+instruction", "find all error codes"), call cursor_count(criteria) ONCE to build the \
+match list, then call cursor_current and cursor_next to walk it one chunk at a time. \
+Do not use similarity_search for exhaustive enumeration.
 
 RULES:
 - NEVER reply that you cannot find information without first calling similarity_search.

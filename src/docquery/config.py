@@ -28,6 +28,10 @@ class Settings:
     llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "120")))
     llm_num_predict: int = field(default_factory=lambda: int(os.getenv("LLM_NUM_PREDICT", "2048")))
 
+    cursor_score_threshold: float = field(
+        default_factory=lambda: float(os.getenv("CURSOR_SCORE_THRESHOLD", "0.6")))
+    cursor_max_scan: int = field(default_factory=lambda: int(os.getenv("CURSOR_MAX_SCAN", "2000")))
+
     def __post_init__(self) -> None:
         if not self.embed_base_url:
             if self.embed_provider == "ollama":
