@@ -50,19 +50,23 @@ def _page_sort_key(item: dict) -> tuple[int, int, int]:
 
 def _format_item(state: CursorState) -> str:
     item = state.items[state.pos]
+    name = item.get("entity_name")
+    label = f", {name}" if name else ""
     return (
         f"Item {state.pos + 1} of {len(state.items)} "
-        f"(criteria: {state.criteria!r}, source: {item.get('source')}, "
+        f"(criteria: {state.criteria!r}{label}, source: {item.get('source')}, "
         f"page: {item.get('page')})\n{item['content']}"
     )
 
 
 def make_cursor_tools(vector_store: Chroma, settings: Settings | None = None) -> list[BaseTool]:
-    """Build the three cursor/iteration tools sharing one CursorState.
+    """Build the cursor/iteration tools, all sharing one CursorState.
 
-    Use these to enumerate *every* instance of something across a large document
-    (e.g. "every instruction in the manual") when a single search can't surface
-    them all and the whole document won't fit in context.
+    Two ways to populate the cursor, both walked by cursor_current / cursor_next:
+    - cursor_count(criteria): fuzzy — the chunks most *relevant* to a query.
+    - cursor_enumerate(entity_type): structural — *every* chunk tagged with that
+      entity type at ingest (instructions, registers, …). Deterministic and
+      complete, the right tool for "walk every X in the manual".
     """
     if settings is None:
         settings = Settings()
@@ -125,6 +129,61 @@ Use for tasks like "list every instruction" or "find all error codes"."""
                 f"Call cursor_current to see the first, then cursor_next to advance.")
 
     @tool
+    def cursor_enumerate(entity_type: str) -> str:
+        """Enumerate EVERY tagged entity of a given type (e.g. "instruction", "register") \
+across the whole document — deterministic and complete, unlike fuzzy cursor_count. \
+Requires the document to have been ingested with entity rules. Freezes one item per \
+distinct entity (page-ordered); then call cursor_current / cursor_next to iterate. \
+Calling this with an unknown type lists the available types."""
+        try:
+            collection = vector_store._collection  # type: ignore[attr-defined]
+        except Exception:
+            logger.error("cursor_enumerate: underlying ChromaDB collection not available")
+            return "Cursor unavailable: the document store could not be accessed."
+
+        raw = collection.get(where={"entity_type": entity_type},
+                             include=["documents", "metadatas"])
+        docs = raw.get("documents") or []
+        metas = raw.get("metadatas") or []
+        ids = raw.get("ids") or []
+
+        if not docs:
+            all_meta = collection.get(include=["metadatas"]).get("metadatas") or []
+            types = sorted({m.get("entity_type") for m in all_meta
+                            if m and m.get("entity_type")})
+            if types:
+                return (f"No entities of type {entity_type!r}. "
+                        f"Available types: {', '.join(types)}.")
+            return ("No structural entities are tagged in this store. Ingest with entity "
+                    "rules (Settings.entity_rules or the --entity CLI flag) to enable "
+                    "cursor_enumerate.")
+
+        items: list[dict] = []
+        seen: set[str] = set()
+        for cid, content, meta in zip(ids, docs, metas, strict=False):
+            meta = meta or {}
+            ename = meta.get("entity_name") or ""
+            key = ename or cid
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({
+                "id": cid,
+                "content": content,
+                "source": meta.get("source"),
+                "page": meta.get("page"),
+                "entity_name": ename,
+                "_order": len(items),
+            })
+        items.sort(key=_page_sort_key)
+        for it in items:
+            it.pop("_order", None)
+        state.reset(f"{entity_type} entities", items)
+        logger.info("cursor_enumerate: type=%r, distinct entities=%d", entity_type, len(items))
+        return (f"Found {len(items)} distinct {entity_type} entities. "
+                f"Call cursor_current to see the first, then cursor_next to advance.")
+
+    @tool
     def cursor_current() -> str:
         """Return the chunk at the cursor's current position. \
 Call cursor_count first to start an iteration. Does not advance the cursor."""
@@ -148,4 +207,4 @@ Call cursor_count first to start an iteration. Reports when iteration is exhaust
         state.pos += 1
         return _format_item(state)
 
-    return [cursor_count, cursor_current, cursor_next]
+    return [cursor_count, cursor_enumerate, cursor_current, cursor_next]

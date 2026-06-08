@@ -1,9 +1,43 @@
+import json
+import logging
 import os
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EntityRule:
+    """A structural tagging rule applied to each chunk at ingest time.
+
+    ``pattern`` is a regex (searched with re.MULTILINE). If it has a capturing
+    group, group(1) becomes the entity name; otherwise the whole match is used.
+    Matching chunks are tagged with metadata ``entity_type=name`` and
+    ``entity_name=<match>``, which cursor_enumerate then walks deterministically.
+
+    Example (ARMv7-M instruction headings):
+        EntityRule(name="instruction", pattern=r"^A7\\.7\\.\\d+\\s+([A-Z][A-Z0-9.]+)")
+    """
+
+    name: str
+    pattern: str
+
+
+def _load_entity_rules_from_env() -> list[EntityRule]:
+    """Parse ENTITY_RULES (JSON list of {name, pattern}) if set, else []."""
+    raw = os.getenv("ENTITY_RULES", "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return [EntityRule(name=r["name"], pattern=r["pattern"]) for r in data]
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("Ignoring malformed ENTITY_RULES env var: %s", exc)
+        return []
 
 
 @dataclass
@@ -31,6 +65,10 @@ class Settings:
     cursor_score_threshold: float = field(
         default_factory=lambda: float(os.getenv("CURSOR_SCORE_THRESHOLD", "0.6")))
     cursor_max_scan: int = field(default_factory=lambda: int(os.getenv("CURSOR_MAX_SCAN", "2000")))
+
+    # Structural enumeration rules: tag chunks at ingest so cursor_enumerate can
+    # walk every instance of an entity type (instructions, registers, …).
+    entity_rules: list[EntityRule] = field(default_factory=_load_entity_rules_from_env)
 
     def __post_init__(self) -> None:
         if not self.embed_base_url:

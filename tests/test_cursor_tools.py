@@ -16,7 +16,7 @@ def cursor_settings():
 
 
 def _tools(store, settings):
-    count, current, nxt = make_cursor_tools(store, settings)
+    count, _enumerate, current, nxt = make_cursor_tools(store, settings)
     return count, current, nxt
 
 

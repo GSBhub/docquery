@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import chromadb
@@ -7,10 +8,36 @@ from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.documents import Document
 from langsmith import traceable
 
-from docquery.config import Settings
+from docquery.config import EntityRule, Settings
 from docquery.embeddings.provider import get_embeddings
 
 logger = logging.getLogger(__name__)
+
+
+def tag_entities(docs: list[Document], rules: list[EntityRule]) -> list[Document]:
+    """Tag chunks with structural entity metadata in place.
+
+    For each chunk, the first rule whose pattern matches sets
+    ``entity_type=<rule.name>`` and ``entity_name=<match>`` on the chunk's
+    metadata, so cursor_enumerate can later walk every entity of a type.
+    Chunks that match no rule are left untouched. Returns the same list.
+    """
+    if not rules:
+        return docs
+    compiled = [(r.name, re.compile(r.pattern, re.MULTILINE)) for r in rules]
+    tagged = 0
+    for d in docs:
+        text = d.page_content or ""
+        for name, rx in compiled:
+            m = rx.search(text)
+            if not m:
+                continue
+            ent = (m.group(1) if m.groups() else m.group(0)).strip()
+            d.metadata = {**(d.metadata or {}), "entity_type": name, "entity_name": ent}
+            tagged += 1
+            break
+    logger.info("tag_entities: tagged %d/%d chunks using %d rule(s)", tagged, len(docs), len(rules))
+    return docs
 
 
 def _build_chroma(settings: Settings, collection_name: str = "db_knowledge") -> Chroma:
@@ -58,6 +85,7 @@ def ingest_documents(
         )
         docs.extend(loader.lazy_load())
 
+    tag_entities(docs, getattr(settings, "entity_rules", []))
     filtered = filter_complex_metadata(docs)
     vs.add_documents(documents=filtered)
     logger.info("Ingested %d documents into %r", len(filtered), collection_name)
