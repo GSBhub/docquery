@@ -66,6 +66,24 @@ def _apply_overrides(args: argparse.Namespace, settings) -> None:
     )
 
 
+def _parse_entity_rules(specs: list[str] | None):
+    """Parse repeated --entity NAME=REGEX specs into EntityRule objects."""
+    from docquery.config import EntityRule
+
+    rules = []
+    for spec in specs or []:
+        if "=" not in spec:
+            print(f"Error: --entity must be NAME=REGEX, got {spec!r}")
+            raise SystemExit(1)
+        name, pattern = spec.split("=", 1)
+        name = name.strip()
+        if not name or not pattern:
+            print(f"Error: --entity must be NAME=REGEX with both parts, got {spec!r}")
+            raise SystemExit(1)
+        rules.append(EntityRule(name=name, pattern=pattern))
+    return rules
+
+
 def cmd_ingest(args: argparse.Namespace) -> None:
     from docquery.config import Settings
     import docquery
@@ -77,6 +95,10 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         settings.chunk_size = args.chunk_size
     if getattr(args, "chunk_overlap", None) is not None:
         settings.chunk_overlap = args.chunk_overlap
+
+    cli_rules = _parse_entity_rules(getattr(args, "entity", None))
+    if cli_rules:
+        settings.entity_rules = cli_rules
 
     count = docquery.ingest(args.files, settings=settings)
     print(f"Done — {count} documents added to {settings.vs._collection_name} collection")
@@ -166,6 +188,9 @@ def main() -> None:
                           help="Characters per chunk (overrides CHUNK_SIZE env var)")
     p_ingest.add_argument("--chunk-overlap", type=int, default=None,
                           help="Overlap between chunks (overrides CHUNK_OVERLAP env var)")
+    p_ingest.add_argument("--entity", action="append", metavar="NAME=REGEX", default=None,
+                          help="Tag chunks matching REGEX as entity NAME for cursor_enumerate "
+                               "(repeatable), e.g. --entity instruction='^A7\\.7\\.\\d+\\s+([A-Z][A-Z0-9.]+)'")
     _add_common_args(p_ingest)
 
     # query

@@ -64,8 +64,8 @@ LLM_MODEL=gpt-4o-mini
 | `LLM_API_KEY` | — | API key |
 | `LLM_MODEL` | `gpt-4o-mini` | LLM model name |
 | `DB_PATH` | `rag.db` | SQLite database file |
-| `CHUNK_SIZE` | `1000` | Characters per chunk |
-| `CHUNK_OVERLAP` | `200` | Overlap between chunks |
+| `CHUNK_SIZE` | `2000` | Max characters per chunk (Unstructured `max_characters`) |
+| `CHUNK_OVERLAP` | `200` | Characters carried between chunks; keeps headings split across a boundary intact for entity enumeration |
 | `TOP_K` | `5` | Similarity results returned per search |
 | `MAX_RETRIES` | `3` | Max extraction retries on validation error |
 
@@ -91,13 +91,15 @@ Progress bars show pages loaded, embedding batches, and chunks written to the da
 docquery chat --db my_manual.db
 ```
 
-Opens an interactive REPL. The agent has three built-in tools it calls automatically:
+Opens an interactive REPL. The agent has these built-in tools it calls automatically:
 
 | Tool | When the agent uses it |
 |---|---|
 | `similarity_search` | General questions about document content |
 | `page_lookup` | Questions referencing a specific page number |
 | `keyword_search` | Exact-match lookups: opcodes, hex bytes, mnemonics |
+| `cursor_count` / `cursor_current` / `cursor_next` | Iterate the *most relevant* matches for a fuzzy criteria, one at a time |
+| `cursor_enumerate` | Walk **every** instance of a tagged entity type (e.g. every instruction or register) — see [Enumerating entities](#enumerating-entities) |
 
 Example session:
 
@@ -230,6 +232,39 @@ registry.register(Tool(name="my_tool", description="...", func=my_tool_fn))
 agent = ChatAgent(registry, settings)
 print(agent.chat("your question here"))
 ```
+
+### Enumerating entities
+
+`cursor_enumerate` walks **every** instance of a structural entity (instructions,
+registers, …) — deterministic and complete, unlike the fuzzy `cursor_count`. You
+define what an entity is with regex rules applied at ingest, which tag each matching
+chunk with `entity_type` / `entity_name` metadata.
+
+**CLI** — repeatable `--entity NAME=REGEX` (group 1 is the entity name):
+
+```bash
+docquery ingest manual.pdf --db my.db \
+  --entity instruction='^A7\.7\.\d+\s+([A-Z][A-Z0-9.]+)' \
+  --entity register='G6\.2\.\d+\s+([A-Z][A-Z0-9_]+),'
+```
+
+**Programmatic** (e.g. as a LangGraph node/tool provider — bring your own Documents
+and rules):
+
+```python
+import docquery
+from docquery import EntityRule, Settings
+
+settings = Settings(entity_rules=[
+    EntityRule(name="instruction", pattern=r"^A7\.7\.\d+\s+([A-Z][A-Z0-9.]+)"),
+    EntityRule(name="register",    pattern=r"G6\.2\.\d+\s+([A-Z][A-Z0-9_]+),"),
+])
+docquery.ingest(my_documents, settings=settings)   # tags chunks during ingest
+```
+
+The agent then walks them: `cursor_enumerate("instruction")` → `cursor_current` →
+`cursor_next` … Calling `cursor_enumerate` with an unknown type lists the available
+types. (`ENTITY_RULES` as a JSON env var works too — see `env.template`.)
 
 ---
 
