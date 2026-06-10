@@ -1,6 +1,7 @@
 import logging
 
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 from pydantic import BaseModel
 
 from docquery.config import Settings
@@ -41,6 +42,7 @@ class ExtractionPipeline:
 
         self._graph = graph.compile()
 
+    @traceable(name="extraction_pipeline_run")
     def run(self, query: str) -> BaseModel:
         initial: ExtractionState = {
             "query": query,

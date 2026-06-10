@@ -1,15 +1,18 @@
 import logging
 import re
 
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool, tool
 
 from langchain_chroma.vectorstores import Chroma
 
 logger = logging.getLogger(__name__)
 
 
-def make_page_lookup_tool(vector_store: Chroma) -> Tool:
-    def _lookup(query: str) -> str:
+def make_page_lookup_tool(vector_store: Chroma) -> BaseTool:
+    @tool
+    def page_lookup(query: str) -> str:
+        """Retrieve all text from a specific page number of the document. \
+Input should be a page number (e.g. '50' or 'page 50')."""
         # Accept "50", "page 50", "page_number: 50", etc.
         match = re.search(r"\d+", query)
         if not match:
@@ -22,14 +25,7 @@ def make_page_lookup_tool(vector_store: Chroma) -> Tool:
             return f"No content found for page {page_num}."
         return "\n\n".join(r["content"] for r in results)
 
-    return Tool(
-        name="page_lookup",
-        description=(
-            "Retrieve all text from a specific page number of the document. "
-            "Input should be a page number (e.g. '50' or 'page 50')."
-        ),
-        func=_lookup,
-    )
+    return page_lookup
 
 def _page_lookup(vector_store: Chroma, page_num: int) -> list[dict]:
     """ Return all chunks wohse metadata.page equals the given page number."""

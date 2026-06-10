@@ -1,14 +1,19 @@
 import logging
 
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool, tool
 
 from langchain_chroma.vectorstores import Chroma
 
 logger = logging.getLogger(__name__)
 
 
-def make_keyword_tool(vector_store: Chroma) -> Tool:
-    def _search(query: str) -> str:
+def make_keyword_tool(vector_store: Chroma) -> BaseTool:
+    @tool
+    def keyword_search(query: str) -> str:
+        """SECONDARY search tool for exact string matches. \
+Use this only to supplement similarity_search when you need to find a specific hex value, \
+opcode byte sequence, or known identifier (e.g. '0xfe 0xed', 'STMDB'). \
+Do NOT use as the first tool — always call similarity_search first."""
         results = _keyword_search(vector_store, query)
         logger.info("keyword_search: query=%r, returned %d matches", query, len(results))
         if not results:
@@ -18,16 +23,7 @@ def make_keyword_tool(vector_store: Chroma) -> Tool:
             parts.append(f"[Source: {r['source']}, Page: {r['page']}]\n{r['content']}")
         return "\n\n---\n\n".join(parts)
 
-    return Tool(
-        name="keyword_search",
-        description=(
-            "SECONDARY search tool for exact string matches. "
-            "Use this only to supplement similarity_search when you need to find a specific hex value, "
-            "opcode byte sequence, or known identifier (e.g. '0xfe 0xed', 'STMDB'). "
-            "Do NOT use as the first tool — always call similarity_search first."
-        ),
-        func=_search,
-    )
+    return keyword_search
 
 
 def _keyword_search(vector_store: Chroma, query: str) -> list[dict]:

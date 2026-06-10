@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from docquery.config import Settings
+from docquery.config import EntityRule, Settings
 from docquery._chat import ChatSession
 
 if TYPE_CHECKING:
@@ -100,4 +100,4 @@ def chat_session(
     return ChatSession(agent)
 
 
-__all__ = ["ingest", "query", "chat_session", "ChatSession", "Settings"]
+__all__ = ["ingest", "query", "chat_session", "ChatSession", "Settings", "EntityRule"]

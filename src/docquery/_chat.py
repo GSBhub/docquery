@@ -2,6 +2,7 @@ import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 
 from docquery.config import Settings
 from docquery.embeddings.llm import get_llm
@@ -19,6 +20,11 @@ SEARCH STRATEGY — follow this order every time:
 2. If similarity_search does not give enough detail, call it again with a more specific query, \
 or call keyword_search for exact identifiers (e.g. specific terms, codes, or mnemonics).
 3. Use page_lookup only when the user mentions a specific page number.
+4. To walk EVERY instance of a tagged entity type (e.g. every instruction or register), \
+call cursor_enumerate(entity_type) ONCE — it is deterministic and complete. For a fuzzy \
+"most relevant matches" list, call cursor_count(criteria) instead. Either way, then call \
+cursor_current and cursor_next to walk the result one item at a time. Do not use \
+similarity_search for exhaustive enumeration.
 
 RULES:
 - NEVER reply that you cannot find information without first calling similarity_search.
@@ -43,6 +49,7 @@ class ChatAgent:
     def _build_graph(self):
         system_msg = self._system_prompt
 
+        @traceable(name="agent")
         def agent(state: ChatState) -> ChatState:
             from langchain_core.messages import SystemMessage
             messages = [SystemMessage(content=system_msg)] + list(state["messages"])
@@ -53,6 +60,7 @@ class ChatAgent:
                     logger.info("Tool call: %s(%s)", tc["name"], str(tc.get("args", {}))[:120])
             return {"messages": state["messages"] + [response]}
 
+        @traceable(name="execute_tools")
         def execute_tools(state: ChatState) -> ChatState:
             last = state["messages"][-1]
             new_messages = list(state["messages"])
@@ -80,6 +88,7 @@ class ChatAgent:
         graph.add_edge("execute_tools", "agent")
         return graph.compile()
 
+    @traceable(name="chat")
     def chat(self, user_message: str) -> str:
         self._history.append(HumanMessage(content=user_message))
         final = self._graph.invoke({"messages": self._history})

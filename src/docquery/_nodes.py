@@ -4,6 +4,7 @@ from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langsmith import traceable
 from pydantic import BaseModel
 
 from docquery.config import Settings
@@ -21,12 +22,14 @@ def make_extraction_nodes(
 ):
     schema_json = json.dumps(output_model.model_json_schema(), indent=2)
 
+    @traceable(name="retrieve")
     def retrieve(state: ExtractionState) -> ExtractionState:
         logger.info("Node: retrieve (query=%r)", state["query"])
         context = similarity_tool.invoke(state["query"])
         logger.debug("retrieve: context length=%d", len(context))
         return {**state, "retrieved_context": context}
 
+    @traceable(name="extract")
     def extract(state: ExtractionState) -> ExtractionState:
         logger.info("Node: extract (retry=%d)", state["retry_count"])
         messages = [
@@ -50,6 +53,7 @@ def make_extraction_nodes(
         logger.debug("extract: raw_response=%r", raw[:200])
         return {**state, "raw_response": raw, "validation_errors": []}
 
+    @traceable(name="validate")
     def validate(state: ExtractionState) -> ExtractionState:
         logger.info("Node: validate")
         try:
