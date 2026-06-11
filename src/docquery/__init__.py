@@ -100,4 +100,39 @@ def chat_session(
     return ChatSession(agent)
 
 
-__all__ = ["ingest", "query", "chat_session", "ChatSession", "Settings", "EntityRule"]
+def outline(db_path: str | None = None, *, settings: Settings | None = None) -> list[dict]:
+    """Return the persisted document outline (PDF bookmarks) for a store.
+
+    Args:
+        db_path: Path to the ChromaDB store. Ignored if ``settings`` is given.
+        settings: Optional Settings instance. If None, constructed from env vars.
+
+    Returns:
+        Ordered list of ``{"title", "page", "level"}``; ``[]`` if none was captured.
+    """
+    from docquery._pdf import read_outline
+    s = settings or Settings()
+    if db_path is not None:
+        s.db_path = db_path
+    return read_outline(s)
+
+
+def coverage(db_path: str | None = None, *, settings: Settings | None = None) -> dict[str, dict]:
+    """Return counts of distinct tagged entities per type (and per section).
+
+    Args:
+        db_path: Path to the ChromaDB store. Ignored if ``settings`` is given.
+        settings: Optional Settings instance. If None, constructed from env vars.
+
+    Returns:
+        ``{entity_type: {"count": int, "by_section": {section_title: int}}}``.
+    """
+    from docquery._coverage import entity_coverage
+    s = settings or Settings()
+    if db_path is not None:
+        s.db_path = db_path
+    return entity_coverage(s)
+
+
+__all__ = ["ingest", "query", "chat_session", "outline", "coverage",
+           "ChatSession", "Settings", "EntityRule"]

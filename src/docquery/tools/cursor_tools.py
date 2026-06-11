@@ -48,6 +48,21 @@ def _page_sort_key(item: dict) -> tuple[int, int, int]:
         return (1, 0, order)
 
 
+def _section_sort_key(item: dict) -> tuple[int, int, int, int]:
+    """Sort by section order, then page, then retrieval order.
+
+    Items without a section_order sort before sectioned ones (front matter),
+    preserving page order. On a store with no sections at all this is byte-for-
+    byte equivalent to the previous page-only ordering.
+    """
+    so = item.get("section_order")
+    try:
+        section = int(so)
+    except (TypeError, ValueError):
+        section = -1
+    return (section, *_page_sort_key(item))
+
+
 def _format_item(state: CursorState) -> str:
     item = state.items[state.pos]
     name = item.get("entity_name")
@@ -129,12 +144,13 @@ Use for tasks like "list every instruction" or "find all error codes"."""
                 f"Call cursor_current to see the first, then cursor_next to advance.")
 
     @tool
-    def cursor_enumerate(entity_type: str) -> str:
+    def cursor_enumerate(entity_type: str, section: str | None = None) -> str:
         """Enumerate EVERY tagged entity of a given type (e.g. "instruction", "register") \
 across the whole document — deterministic and complete, unlike fuzzy cursor_count. \
 Requires the document to have been ingested with entity rules. Freezes one item per \
-distinct entity (page-ordered); then call cursor_current / cursor_next to iterate. \
-Calling this with an unknown type lists the available types."""
+distinct entity, ordered by document section then page; then call cursor_current / \
+cursor_next to iterate. Pass an optional section title (or path fragment) to scope \
+enumeration to that section. Calling this with an unknown type lists the available types."""
         try:
             collection = vector_store._collection  # type: ignore[attr-defined]
         except Exception:
@@ -155,6 +171,11 @@ Calling this with an unknown type lists the available types."""
             val = meta.get(key)
             if not val:
                 continue
+            if section is not None:
+                sec = str(meta.get("section") or "")
+                path = str(meta.get("section_path") or "")
+                if section != sec and section not in path:
+                    continue
             for ename in str(val).split(";"):
                 ename = ename.strip()
                 if not ename or ename in seen:
@@ -165,11 +186,15 @@ Calling this with an unknown type lists the available types."""
                     "content": content,
                     "source": meta.get("source"),
                     "page": meta.get("page"),
+                    "section": meta.get("section"),
+                    "section_order": meta.get("section_order"),
                     "entity_name": ename,
                     "_order": len(items),
                 })
 
         if not items:
+            if section is not None:
+                return (f"No {entity_type} entities found in section {section!r}.")
             types = sorted({k[len(ENTITY_PREFIX):] for m in metas if m
                             for k in m if k.startswith(ENTITY_PREFIX)})
             if types:
@@ -179,12 +204,15 @@ Calling this with an unknown type lists the available types."""
                     "rules (Settings.entity_rules or the --entity CLI flag) to enable "
                     "cursor_enumerate.")
 
-        items.sort(key=_page_sort_key)
+        items.sort(key=_section_sort_key)
         for it in items:
             it.pop("_order", None)
-        state.reset(f"{entity_type} entities", items)
-        logger.info("cursor_enumerate: type=%r, distinct entities=%d", entity_type, len(items))
-        return (f"Found {len(items)} distinct {entity_type} entities. "
+        scope = f"{entity_type} entities in {section!r}" if section else f"{entity_type} entities"
+        state.reset(scope, items)
+        logger.info("cursor_enumerate: type=%r, section=%r, distinct entities=%d",
+                    entity_type, section, len(items))
+        return (f"Found {len(items)} distinct {entity_type} entities"
+                f"{f' in section {section!r}' if section else ''}. "
                 f"Call cursor_current to see the first, then cursor_next to advance.")
 
     @tool
