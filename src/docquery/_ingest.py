@@ -260,7 +260,7 @@ def build_encoding_documents(
                 headings.append(first)
         content = "\n".join(
             headings
-            + ["Instruction encoding bit layout (from the manual's encoding diagram):"]
+            + ["Bit-layout encoding (recovered from the document's bit-numbered diagram):"]
             + enc_lines
         )
         docs.append(Document(

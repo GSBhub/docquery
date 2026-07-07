@@ -1,6 +1,6 @@
 import pytest
 
-from docquery.config import Settings, language_directive
+from docquery.config import Settings, StructureRule, language_directive
 
 
 def test_openai_provider_defaults_to_openai_url(monkeypatch):
@@ -137,3 +137,39 @@ def test_azure_key_not_used_for_non_azure_provider(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-generic")
     assert Settings().llm_api_key == "sk-generic"
+
+
+def test_default_structure_rules_shipped(monkeypatch):
+    monkeypatch.delenv("STRUCTURE_RULES", raising=False)
+    kinds = {r.kind for r in Settings().structure_rules}
+    assert {"register_fields", "interrupt_table", "pin_map"} <= kinds
+
+
+def test_structure_rules_env_appends_new_kind(monkeypatch):
+    monkeypatch.setenv(
+        "STRUCTURE_RULES",
+        '[{"kind": "opcode_map", "headers": [["opcode"], ["mnemonic", "operation"]],'
+        ' "name_column": "mnemonic"}]',
+    )
+    rules = {r.kind: r for r in Settings().structure_rules}
+    assert "register_fields" in rules  # defaults kept
+    assert rules["opcode_map"] == StructureRule(
+        kind="opcode_map",
+        headers=[["opcode"], ["mnemonic", "operation"]],
+        name_column="mnemonic",
+    )
+
+
+def test_structure_rules_env_overrides_default_by_kind(monkeypatch):
+    monkeypatch.setenv(
+        "STRUCTURE_RULES",
+        '[{"kind": "pin_map", "headers": [["ball"], ["net"]], "name_column": "ball"}]',
+    )
+    rules = {r.kind: r for r in Settings().structure_rules}
+    assert rules["pin_map"].headers == [["ball"], ["net"]]
+
+
+def test_malformed_structure_rules_keeps_defaults(monkeypatch):
+    monkeypatch.setenv("STRUCTURE_RULES", "not json")
+    kinds = {r.kind for r in Settings().structure_rules}
+    assert {"register_fields", "interrupt_table", "pin_map"} <= kinds

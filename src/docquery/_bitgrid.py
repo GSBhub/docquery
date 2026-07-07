@@ -43,6 +43,11 @@ _VALUE_ROW_GAP = 16.0  # max pts below a header row to look for the value row
 
 _ENCODING_LINE_RE = re.compile(r"^ENCODING (\d+)-bit: ", re.MULTILINE)
 
+# Segment tokens within an ENCODING line, in the order the renderer emits them.
+_SEG_FIXED_RE = re.compile(r"bits\[(\d+):(\d+)\]=([01]+)")
+_SEG_UNREAD_RE = re.compile(r"\?\[(\d+):(\d+)\]")
+_SEG_FIELD_RE = re.compile(r"(\S+)\[(\d+):(\d+)\]")
+
 
 def _rows_by_y(words: "list[Word]") -> "dict[int, list[Word]]":
     """Group words into visual rows keyed by rounded top-y, sorted by x."""
@@ -269,6 +274,32 @@ def render_encoding_lines(encodings: "list[dict[str, Any]]") -> "list[str]":
                 parts.append(f"?{span}")
         lines.append(f"ENCODING {enc['width']}-bit: " + " ".join(parts))
     return lines
+
+
+def parse_encoding_line(line: str) -> "dict[str, Any] | None":
+    """Parse one rendered ENCODING line back into ``{"width", "segments"}``.
+
+    Exact inverse of :func:`render_encoding_lines` for a single encoding;
+    returns ``None`` for anything that is not a well-formed ENCODING line.
+    """
+    line = line.strip()
+    m = _ENCODING_LINE_RE.match(line)
+    if not m:
+        return None
+    segments: list[dict[str, Any]] = []
+    for token in line[m.end():].split():
+        if fixed := _SEG_FIXED_RE.fullmatch(token):
+            hi, lo, value = int(fixed[1]), int(fixed[2]), fixed[3]
+            segments.append({"name": None, "hi": hi, "lo": lo, "value": value})
+        elif unread := _SEG_UNREAD_RE.fullmatch(token):
+            segments.append({"name": None, "hi": int(unread[1]), "lo": int(unread[2]), "value": None})
+        elif field := _SEG_FIELD_RE.fullmatch(token):
+            segments.append({"name": field[1], "hi": int(field[2]), "lo": int(field[3]), "value": None})
+        else:
+            return None
+    if not segments:
+        return None
+    return {"width": int(m[1]), "segments": segments}
 
 
 def extract_page_encodings(page: Any) -> "list[dict[str, Any]]":
