@@ -9,10 +9,39 @@ from pydantic import BaseModel
 
 from docquery.config import Settings, language_directive
 from docquery.embeddings.llm import get_structured_llm
-from docquery._grounding import ungrounded_fields
+from docquery._grounding import ungrounded_fields, ungrounded_records
 from docquery._state import ExtractionState
 
 logger = logging.getLogger(__name__)
+
+
+def _structured_context(settings: Settings, query: str) -> str:
+    """Kind-tagged machine lines semantically relevant to *query*, or "".
+
+    Text loaders flatten tables and bit diagrams into token soup that pairs
+    values with the wrong neighbours; the kind-tagged structure documents are
+    the deterministic recovery of that data. Appending them to the retrieved
+    context gives the extraction LLM correctly-associated lines to copy from
+    (and the record-level grounding check something to verify against).
+    """
+    vs = getattr(settings, "vs", None)
+    if vs is None:
+        return ""
+    try:
+        from docquery.tools.structure_tools import _kind_counts
+        kinds = list(_kind_counts(vs))
+        if not kinds:
+            return ""
+        docs = vs.similarity_search(query, k=settings.top_k,
+                                    filter={"kind": {"$in": kinds}})
+    except Exception as exc:  # noqa: BLE001 - augmentation must never break retrieval
+        logger.debug("structured-context augmentation failed: %s", exc)
+        return ""
+    if not docs:
+        return ""
+    blocks = "\n\n".join(d.page_content for d in docs)
+    return ("\n\nStructured machine-parseable extractions from the document "
+            "(authoritative for values):\n" + blocks)
 
 
 def make_extraction_nodes(
@@ -32,6 +61,7 @@ def make_extraction_nodes(
     def retrieve(state: ExtractionState) -> ExtractionState:
         logger.info("Node: retrieve (query=%r)", state["query"])
         context = similarity_tool.invoke(state["query"])
+        context += _structured_context(settings, state["query"])
         logger.debug("retrieve: context length=%d", len(context))
         return {**state, "retrieved_context": context}
 
@@ -84,16 +114,24 @@ def make_extraction_nodes(
             return {**state, "validated": None, "validation_errors": errors, "retry_count": state["retry_count"] + 1}
 
         # Schema-valid is not document-true: verifiable values must literally
-        # appear in the retrieved context (the store is the source of truth).
+        # appear in the retrieved context (the store is the source of truth),
+        # and a record's values must co-occur on one line — presence alone
+        # cannot catch NMI paired with HardFault's address.
         if settings.grounding != "off":
-            misses = ungrounded_fields(instance, state["retrieved_context"])
+            context = state["retrieved_context"]
+            misses = [
+                f"Value not found in the retrieved context: {m}. "
+                "Use only values that appear in the context; do not fill "
+                "gaps from prior knowledge."
+                for m in ungrounded_fields(instance, context)
+            ] + [
+                f"Wrongly associated values: {m} do not appear together on "
+                "any line of the context. Copy field groups from a single "
+                "table row / encoding line."
+                for m in ungrounded_records(instance, context)
+            ]
             if misses and settings.grounding == "strict":
-                errors = [
-                    f"Value not found in the retrieved context: {m}. "
-                    "Use only values that appear in the context; do not fill "
-                    "gaps from prior knowledge."
-                    for m in misses
-                ]
+                errors = misses
                 logger.info("Grounding failed: %d ungrounded field(s): %s",
                             len(misses), "; ".join(misses)[:200])
                 return {**state, "validated": None, "validation_errors": errors,

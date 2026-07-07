@@ -144,6 +144,57 @@ def test_booleans_are_not_verifiable():
     assert ungrounded_fields(M(enabled=True), CONTEXT) == []
 
 
+# ---------------------------------------------------------------------------
+# ungrounded_records (association / co-occurrence)
+# ---------------------------------------------------------------------------
+
+ROWS = """TABLE interrupt_table: irq | acronym | vector_address
+ROW 2 | NMI | 0x00000008
+ROW 3 | HardFault | 0x0000000C"""
+
+
+class Vector(BaseModel):
+    name: str
+    address: str
+
+
+def test_correctly_paired_record_grounds():
+    from docquery._grounding import ungrounded_records
+    v = Vector(name="NMI", address="0x08")
+    assert ungrounded_records(v, ROWS) == []
+
+
+def test_mispaired_record_is_flagged_despite_presence():
+    from docquery._grounding import ungrounded_records
+    # both tokens exist in the context — but never on the same line
+    v = Vector(name="NMI", address="0x0C")
+    (miss,) = ungrounded_records(v, ROWS)
+    assert "NMI" in miss and "0x0C" in miss
+
+
+def test_nested_list_records_use_dotted_paths():
+    from docquery._grounding import ungrounded_records
+
+    class Table(BaseModel):
+        vectors: list[Vector]
+
+    t = Table(vectors=[Vector(name="NMI", address="0x08"),
+                       Vector(name="HardFault", address="0x08")])
+    (miss,) = ungrounded_records(t, ROWS)
+    assert miss.startswith("vectors.1:")
+
+
+def test_single_scalar_records_are_not_association_checked():
+    from docquery._grounding import ungrounded_records
+
+    class M(BaseModel):
+        name: str
+        note: str  # prose-length, not verifiable
+
+    m = M(name="NMI", note="A long descriptive sentence that is paraphrased.")
+    assert ungrounded_records(m, ROWS) == []
+
+
 def test_sentence_final_number_grounds_but_decimal_part_does_not():
     class M(BaseModel):
         value: int
