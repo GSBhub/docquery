@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from docquery.config import StructureRule, _DEFAULT_STRUCTURE_RULES
+from docquery._ingest import build_structure_documents
 from docquery._tables import (
     extract_document_tables,
     parse_table_lines,
     render_table_lines,
+    split_lines_by_kind,
+    table_names,
     tables_from_words,
 )
 
@@ -214,6 +217,55 @@ def test_parse_skips_prose_and_orphan_rows():
 def test_parse_pads_short_rows():
     parsed = parse_table_lines(["TABLE pin_map: pin | function", "ROW PA0"])
     assert parsed[0]["rows"] == [{"pin": "PA0", "function": ""}]
+
+
+# ---------------------------------------------------------------------------
+# ingest helpers: split_lines_by_kind / table_names / build_structure_documents
+# ---------------------------------------------------------------------------
+
+LINES = [
+    "TABLE interrupt_table: irq | acronym | description",
+    "ROW 2 | NMI | Non-maskable",
+    "ROW 3 | HardFault | All faults",
+    "TABLE pin_map: pin | function",
+    "ROW PA0 | ADC_IN0",
+]
+
+
+def test_split_lines_by_kind_regroups_pages():
+    by_kind = split_lines_by_kind({7: LINES})
+    assert set(by_kind) == {"interrupt_table", "pin_map"}
+    assert by_kind["interrupt_table"][7] == LINES[:3]
+    assert by_kind["pin_map"][7] == LINES[3:]
+
+
+def test_table_names_reads_name_column():
+    assert table_names(LINES[:3], "acronym") == ["NMI", "HardFault"]
+    assert table_names(LINES[:3], "missing") == []
+
+
+def test_build_structure_documents_tags_kind_and_bridges_entities():
+    (d,) = build_structure_documents(
+        "manual.pdf", "interrupt_table", {7: LINES[:3]},
+        {7: "Exception model\nprose"}, {},
+        intro="Structured interrupt table:",
+        names_by_page={7: ["NMI", "HardFault"]},
+        entity_type="interrupt",
+    )
+    assert d.metadata == {
+        "source": "manual.pdf", "page": 7, "kind": "interrupt_table",
+        "entity_interrupt": "NMI;HardFault",
+    }
+    assert "Structured interrupt table:" in d.page_content
+    assert "ROW 2 | NMI | Non-maskable" in d.page_content
+
+
+def test_build_structure_documents_without_names_has_no_entity_tag():
+    (d,) = build_structure_documents(
+        "manual.pdf", "pin_map", {3: LINES[3:]}, {3: "Pinout"}, {},
+        intro="Structured pin map:",
+    )
+    assert d.metadata == {"source": "manual.pdf", "page": 3, "kind": "pin_map"}
 
 
 # ---------------------------------------------------------------------------
