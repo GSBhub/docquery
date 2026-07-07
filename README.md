@@ -297,6 +297,53 @@ The agent then walks them: `cursor_enumerate("instruction")` → `cursor_current
 `cursor_next` … Calling `cursor_enumerate` with an unknown type lists the available
 types. (`ENTITY_RULES` as a JSON env var works too — see `env.template`.)
 
+### Structured regions (bit layouts and classified tables)
+
+Ingest deterministically recovers two kinds of structure that text loaders destroy,
+storing each as a kind-tagged document of machine-parseable lines:
+
+- **Bit-layout encodings** (`kind="encoding_grid"`) — instruction/register encoding
+  diagrams rebuilt from page geometry:
+
+  ```
+  ENCODING 32-bit: bits[31:25]=0001100 S[24:24] Rn[19:16] ?[15:12] Rm[3:0]
+  ```
+
+  `bits[hi:lo]=…` are fixed bits, `name[hi:lo]` named fields, `?[hi:lo]` unreadable.
+
+- **Classified tables** — column-aligned tables whose headers match a
+  `StructureRule` (synonym-group matching; wrapped multi-line headers supported).
+  Shipped default kinds: `register_fields`, `interrupt_table`, `pin_map`.
+
+  ```
+  TABLE register_fields: bit | field | description
+  ROW 7:0 | EN | Enable bits for channels 0-7
+  ```
+
+Rules are **configuration, not code** — extend or override them per document domain
+with the `STRUCTURE_RULES` JSON env var or repeatable `--structure KIND=JSON`:
+
+```bash
+docquery ingest datasheet.pdf --db my.db \
+  --structure 'dma_table=[["channel"],["request","source"]]'
+```
+
+A rule's `name_column` bridges table rows into the entity system: the exception
+table's names (`NMI`, `HardFault`, …) become `entity_interrupt` tags, so
+`cursor_enumerate("interrupt")` walks them like any other entity, and
+`cursor_enumerate("instruction", kind="encoding_grid")` walks only instructions
+that have a recovered encoding.
+
+Retrieval and inspection:
+
+- Chat agent: the `structure_lookup` tool filters by kind / page / entity / section;
+  with no arguments it lists the kinds present.
+- Python: `docquery.structures(kind=None, db_path=...)` returns parsed records
+  (encoding segments; table rows with `{"hi", "lo"}` bit-range annotation), and
+  `docquery.structure_coverage(db_path=...)` returns per-kind counts.
+- CLI: `docquery structures --db my.db` prints a per-kind summary;
+  `docquery structures --kind register_fields --json` dumps parsed records.
+
 ---
 
 ## Running tests
@@ -327,14 +374,18 @@ Tests use mock embeddings (no API calls required) and a temporary SQLite databas
 ```
 src/docquery/
 ├── __init__.py             # public API: ingest(), query(), chat_session()
-├── cli.py                  # ingest / chat / query subcommands
-├── config.py               # Settings from env / .env
+├── cli.py                  # ingest / chat / query / structures subcommands
+├── config.py               # Settings from env / .env; EntityRule, StructureRule
 ├── logging_config.py       # setup_logging()
 ├── _ingest.py              # PDF loading, chunking, ChromaDB population
 ├── _extractor.py           # ExtractionPipeline (structured Pydantic output)
 ├── _chat.py                # ChatAgent + ChatSession (LangGraph ReAct loop)
 ├── _nodes.py               # retrieve / extract / validate / retry graph nodes
 ├── _state.py               # ExtractionState, ChatState TypedDicts
+├── _bitgrid.py             # bit-layout encoding recovery from page geometry
+├── _tables.py              # rule-driven table recovery from page geometry
+├── _structures.py          # parse kind-tagged docs back into records
+├── _coverage.py            # entity_coverage / kind_coverage metadata scans
 ├── embeddings/
 │   ├── provider.py         # get_embeddings() — OpenAI, Ollama, or Azure
 │   └── llm.py              # get_llm() — OpenAI, Ollama, Anthropic, or Azure
@@ -342,5 +393,6 @@ src/docquery/
     ├── retrieval_tools.py  # similarity_search tool
     ├── page_tools.py       # page_lookup tool
     ├── keyword_tools.py    # keyword_search tool
+    ├── structure_tools.py  # structure_lookup tool (kind-filtered retrieval)
     └── registry.py         # ToolRegistry with .register()
 ```
