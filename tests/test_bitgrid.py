@@ -7,6 +7,7 @@ import pytest
 from docquery._bitgrid import (
     encodings_from_words,
     extract_document_encodings,
+    parse_encoding_line,
     render_encoding_lines,
 )
 from docquery._ingest import build_encoding_documents
@@ -135,6 +136,39 @@ def test_dangling_upper_half_is_dropped():
 def test_no_grid_no_encodings():
     words = [_word(100, 50, "This"), _word(120, 50, "is"), _word(135, 50, "prose")]
     assert encodings_from_words(words) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_encoding_line
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("encoding", [
+    {"width": 16, "segments": [
+        {"name": None, "hi": 15, "lo": 9, "value": "0001100"},
+        {"name": "Rm", "hi": 8, "lo": 6, "value": None},
+        {"name": "Rn", "hi": 5, "lo": 3, "value": None},
+        {"name": "Rd", "hi": 2, "lo": 0, "value": None},
+    ]},
+    {"width": 32, "segments": [
+        {"name": None, "hi": 31, "lo": 16, "value": "1111111111111111"},
+        {"name": None, "hi": 15, "lo": 0, "value": "0000000000000000"},
+    ]},
+    {"width": 8, "segments": [
+        {"name": None, "hi": 7, "lo": 4, "value": "0110"},
+        {"name": None, "hi": 3, "lo": 2, "value": None},   # unreadable → ?[3:2]
+        {"name": "Rd", "hi": 1, "lo": 0, "value": None},
+    ]},
+])
+def test_parse_encoding_line_round_trips_renderer(encoding):
+    (line,) = render_encoding_lines([encoding])
+    assert parse_encoding_line(line) == encoding
+
+
+def test_parse_encoding_line_rejects_prose_and_malformed():
+    assert parse_encoding_line("This is prose.") is None
+    assert parse_encoding_line("") is None
+    assert parse_encoding_line("ENCODING 16-bit: not!a(segment") is None
+    assert parse_encoding_line("ENCODING 16-bit: ") is None
 
 
 # ---------------------------------------------------------------------------

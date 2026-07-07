@@ -56,6 +56,80 @@ def _load_entity_rules_from_env() -> list[EntityRule]:
 
 
 @dataclass
+class StructureRule:
+    """Classifies a column-aligned document table into a structured kind.
+
+    ``headers`` is a list of synonym groups; a table's header row matches when
+    every group is matched by a distinct header cell. A cell matches a synonym
+    when any of its words starts with it, case-insensitively — so "Bit(s)"
+    matches "bit" and "Exception type" matches "type". Matched columns are
+    keyed by the group's *first* synonym, so downstream consumers see stable
+    column names regardless of the document's exact wording.
+
+    ``name_column`` (a group's first synonym) marks the column whose values
+    name the table's instances; when set, matched documents are tagged
+    ``entity_<entity_type>`` at ingest so cursor_enumerate can walk the rows.
+    ``entity_type`` defaults to ``kind``.
+    """
+
+    kind: str
+    headers: list[list[str]]
+    name_column: str | None = None
+    entity_type: str | None = None
+
+
+# Shipped defaults — generic hardware/ISA table vocabulary, not tied to any
+# vendor. Fully replaceable: an env/CLI rule with the same kind overrides its
+# default, and new kinds are just appended.
+_DEFAULT_STRUCTURE_RULES = [
+    StructureRule(
+        kind="register_fields",
+        headers=[["bit", "bits"],
+                 ["field", "name", "symbol", "function", "meaning", "description"]],
+        name_column="field",
+        entity_type="register_field",
+    ),
+    StructureRule(
+        kind="interrupt_table",
+        headers=[["irq", "exception", "vector", "position", "interrupt"],
+                 ["acronym", "name", "type", "source"]],
+        name_column="acronym",
+        entity_type="interrupt",
+    ),
+    StructureRule(
+        kind="pin_map",
+        headers=[["pin", "ball", "pad"],
+                 ["function", "signal", "alternate", "af", "name", "description"]],
+        name_column="pin",
+        entity_type="pin",
+    ),
+]
+
+
+def _load_structure_rules_from_env() -> list[StructureRule]:
+    """Shipped defaults merged with STRUCTURE_RULES (JSON list of rule dicts).
+
+    An env rule whose ``kind`` matches a default replaces that default;
+    other env rules are appended. Malformed JSON keeps the defaults.
+    """
+    rules = {r.kind: r for r in _DEFAULT_STRUCTURE_RULES}
+    raw = os.getenv("STRUCTURE_RULES", "").strip()
+    if raw:
+        try:
+            for r in json.loads(raw):
+                rule = StructureRule(
+                    kind=r["kind"],
+                    headers=[list(g) for g in r["headers"]],
+                    name_column=r.get("name_column"),
+                    entity_type=r.get("entity_type"),
+                )
+                rules[rule.kind] = rule
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("Ignoring malformed STRUCTURE_RULES env var: %s", exc)
+    return list(rules.values())
+
+
+@dataclass
 class Settings:
     embed_provider: str = field(default_factory=lambda: os.getenv("EMBED_PROVIDER", "openai"))
     embed_base_url: str = field(default_factory=lambda: os.getenv("EMBED_BASE_URL", ""))
@@ -90,6 +164,11 @@ class Settings:
     # Structural enumeration rules: tag chunks at ingest so cursor_enumerate can
     # walk every instance of an entity type (instructions, registers, …).
     entity_rules: list[EntityRule] = field(default_factory=_load_entity_rules_from_env)
+
+    # Table-classification rules: turn column-aligned document tables into
+    # kind-tagged structure documents at ingest (register fields, interrupt
+    # vectors, pin maps, …). Defaults + STRUCTURE_RULES env additions.
+    structure_rules: list[StructureRule] = field(default_factory=_load_structure_rules_from_env)
 
     def __post_init__(self) -> None:
         if not self.embed_base_url:
