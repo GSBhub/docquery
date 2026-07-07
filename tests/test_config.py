@@ -1,6 +1,6 @@
 import pytest
 
-from docquery.config import Settings
+from docquery.config import Settings, language_directive
 
 
 def test_openai_provider_defaults_to_openai_url(monkeypatch):
@@ -108,6 +108,27 @@ def test_explicit_llm_api_key_beats_azure_key(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "sk-explicit")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure")
     assert Settings().llm_api_key == "sk-explicit"
+
+
+def test_doc_language_from_env(monkeypatch):
+    monkeypatch.setenv("DOC_LANGUAGE", "German")
+    assert Settings().doc_language == "German"
+
+
+def test_doc_language_defaults_empty(monkeypatch):
+    monkeypatch.delenv("DOC_LANGUAGE", raising=False)
+    assert Settings().doc_language == ""
+
+
+def test_language_directive_empty_when_unset():
+    assert language_directive("") == ""
+    assert language_directive("   ") == ""
+
+
+def test_language_directive_mentions_language():
+    directive = language_directive("German")
+    assert "German" in directive
+    assert "language the user's question is written in" in directive
 
 
 def test_azure_key_not_used_for_non_azure_provider(monkeypatch):

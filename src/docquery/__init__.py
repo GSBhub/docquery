@@ -40,6 +40,7 @@ def query(
     *,
     schema: type[BaseModel] | None = None,
     system_prompt: str | None = None,
+    doc_language: str | None = None,
     settings: Settings | None = None,
 ) -> str | BaseModel:
     """One-shot RAG query against the vector store.
@@ -51,6 +52,8 @@ def query(
         prompt: The question or extraction instruction.
         schema: Optional Pydantic model class for structured extraction.
         system_prompt: Override the default system prompt.
+        doc_language: Language the source document is written in (overrides
+            the DOC_LANGUAGE env var / ``settings.doc_language``).
         settings: Optional Settings instance. If None, constructed from env vars.
 
     Returns:
@@ -58,6 +61,8 @@ def query(
     """
     from docquery._ingest import _build_chroma
     s = settings or Settings()
+    if doc_language is not None:
+        s.doc_language = doc_language
     _build_chroma(s)
 
     if schema is not None:
@@ -79,12 +84,15 @@ def query(
 def chat_session(
     *,
     system_prompt: str | None = None,
+    doc_language: str | None = None,
     settings: Settings | None = None,
 ) -> ChatSession:
     """Create a stateful ChatSession backed by the configured vector store.
 
     Args:
         system_prompt: Override the default system prompt.
+        doc_language: Language the source document is written in (overrides
+            the DOC_LANGUAGE env var / ``settings.doc_language``).
         settings: Optional Settings instance. If None, constructed from env vars.
 
     Returns:
@@ -94,6 +102,8 @@ def chat_session(
     from docquery._chat import ChatAgent
     from docquery.tools.registry import ToolRegistry
     s = settings or Settings()
+    if doc_language is not None:
+        s.doc_language = doc_language
     _build_chroma(s)
     registry = ToolRegistry(s.vs, s)
     agent = ChatAgent(registry, s, system_prompt=system_prompt)
