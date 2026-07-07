@@ -220,6 +220,56 @@ def assign_sections(docs: list[Document], outline: list[dict], source: str) -> i
     return sectioned
 
 
+def build_encoding_documents(
+    source: str,
+    encodings_by_page: dict[int, list[str]],
+    page_text: dict[int, str],
+    page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+) -> list[Document]:
+    """Build one Document per page that has extracted encoding bit-grids.
+
+    The document leads with the page's entity heading lines (or its first text
+    line as a fallback) so similarity search associates the ENCODING lines with
+    the instruction they belong to; the lines themselves are machine-parseable
+    (see :mod:`docquery._bitgrid`). Each heading is extended with the non-empty
+    page line that follows it — ISA manuals typically put the section number and
+    the instruction name on consecutive lines, and the *name* is what downstream
+    consumers match on.
+    """
+    docs: list[Document] = []
+    for page, enc_lines in sorted(encodings_by_page.items()):
+        text_lines = [ln.strip() for ln in (page_text.get(page) or "").splitlines()]
+        headings: list[str] = []
+
+        def _add_with_continuation(line: str) -> None:
+            if line and line not in headings:
+                headings.append(line)
+            stripped = line.strip()
+            if stripped in text_lines:
+                idx = text_lines.index(stripped)
+                follow = next((ln for ln in text_lines[idx + 1:idx + 4] if ln), "")
+                if follow and follow not in headings:
+                    headings.append(follow)
+
+        for entries in (page_entities.get(page) or {}).values():
+            for _, line in entries:
+                _add_with_continuation(line)
+        if not headings:
+            first = next((ln for ln in text_lines if ln), "")
+            if first:
+                headings.append(first)
+        content = "\n".join(
+            headings
+            + ["Instruction encoding bit layout (from the manual's encoding diagram):"]
+            + enc_lines
+        )
+        docs.append(Document(
+            page_content=content,
+            metadata={"source": source, "page": page, "kind": "encoding_grid"},
+        ))
+    return docs
+
+
 def _build_chroma(settings: Settings, collection_name: str = "db_knowledge") -> Chroma:
     """Build (or reuse) the Chroma wrapper on settings.vs."""
     if getattr(settings, "vs", None) is not None:
@@ -274,14 +324,21 @@ def ingest_documents(
 
     rules = getattr(settings, "entity_rules", [])
     # Pre-chunk pass over each PDF: match headings on whole-page text (immune to
-    # chunk boundaries) and propagate onto the derived chunks.
+    # chunk boundaries) and propagate onto the derived chunks; recover encoding
+    # bit-grids from page geometry (flattened beyond use by the text loader).
     for p in file_paths:
         if str(p).lower().endswith(".pdf"):
+            from docquery._bitgrid import extract_document_encodings
             from docquery._pdf import extract_outline, extract_page_text, persist_outline
-            if rules:
-                page_entities = match_page_entities(extract_page_text(p), rules)
-                if page_entities:
-                    propagate_page_entities(docs, page_entities, str(p))
+            page_text = extract_page_text(p)
+            page_entities = match_page_entities(page_text, rules) if rules else {}
+            encodings_by_page = extract_document_encodings(p)
+            if encodings_by_page:
+                docs.extend(build_encoding_documents(
+                    str(p), encodings_by_page, page_text, page_entities,
+                ))
+            if page_entities:
+                propagate_page_entities(docs, page_entities, str(p))
             outline = extract_outline(p)
             if outline:
                 assign_sections(docs, outline, str(p))
