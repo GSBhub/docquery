@@ -98,6 +98,7 @@ LLM_API_KEY=sk-ant-...
 | `CHUNK_OVERLAP` | `200` | Characters carried between chunks; keeps headings split across a boundary intact for entity enumeration |
 | `TOP_K` | `5` | Similarity results returned per search |
 | `DOC_LANGUAGE` | — | Language the source document is written in; informs chat and extraction prompts (also `--doc-language`) |
+| `GROUNDING` | `strict` | Verify answer/extraction values against retrieved document text: `strict`, `warn`, or `off` |
 | `MAX_RETRIES` | `3` | Max extraction retries on validation error |
 
 ---
@@ -343,6 +344,32 @@ Retrieval and inspection:
   `docquery.structure_coverage(db_path=...)` returns per-kind counts.
 - CLI: `docquery structures --db my.db` prints a per-kind summary;
   `docquery structures --kind register_fields --json` dumps parsed records.
+
+### Grounding: the store is the sole source of truth
+
+LLMs re-type values even when the correct data is in context, and models that
+know a domain from pretraining fill gaps with plausible-but-unsourced values.
+docquery counters both **deterministically** — no LLM-as-judge:
+
+- **Chat** — final answers pass through a verifier node in the LangGraph graph.
+  An answer produced with zero tool calls is bounced back once (structural
+  enforcement). Verifiable claims — hex literals, bit ranges, binary field
+  values, quoted `ENCODING`/`ROW` lines — must appear in this turn's tool
+  output, after normalization (`0x4` ≡ `0x00000004`). In `strict` mode an
+  ungrounded answer is bounced back once with the exact offending values; if
+  it persists (or in `warn` mode) the answer is annotated with a
+  `[grounding warning]` listing them.
+- **Extraction** — the output schema is bound with provider structured output
+  (grammar-constrained decoding on Ollama, so shape errors are impossible),
+  and every verifiable scalar leaf of the extracted model must appear in the
+  retrieved context. In `strict` mode misses feed the existing
+  validation-retry loop with per-field messages; prose fields are exempt
+  (they're legitimately paraphrased).
+
+`GROUNDING=strict|warn|off` (default `strict`). Note the check verifies
+*presence*, not reasoning: a value the model legitimately derived (e.g. a
+computed mask) will be flagged if it isn't literally in the document — use
+`warn` if that trade-off doesn't fit your workload.
 
 ---
 
