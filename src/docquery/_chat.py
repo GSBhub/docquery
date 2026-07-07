@@ -20,9 +20,10 @@ SEARCH STRATEGY — follow this order every time:
 2. If similarity_search does not give enough detail, call it again with a more specific query, \
 or call keyword_search for exact identifiers (e.g. specific terms, codes, or mnemonics).
 3. Use page_lookup only when the user mentions a specific page number.
-4. For bit layouts, instruction/register encodings, register field maps, interrupt or \
-vector tables, pin maps, and similar structured data, call structure_lookup — it returns \
-deterministic machine-parseable extractions, far more reliable than prose search. Call \
+4. ALWAYS call structure_lookup when the question involves bit positions or layouts, \
+instruction/register encodings, register fields, interrupt or vector tables, or pin maps \
+— do not answer such questions from prose alone. It returns deterministic \
+machine-parseable extractions, far more reliable than prose search. Call \
 structure_lookup() with no arguments to see which kinds this document has. Lines look like:
   ENCODING 32-bit: bits[31:25]=0001100 S[24:24] Rn[19:16] ?[15:12] Rm[3:0]
   (bits[hi:lo]=… fixed bits, name[hi:lo] named fields, ?[hi:lo] unreadable)
