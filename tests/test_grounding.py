@@ -142,3 +142,13 @@ def test_booleans_are_not_verifiable():
     class M(BaseModel):
         enabled: bool
     assert ungrounded_fields(M(enabled=True), CONTEXT) == []
+
+
+def test_sentence_final_number_grounds_but_decimal_part_does_not():
+    class M(BaseModel):
+        value: int
+    # "42." at end of sentence supports 42 ...
+    assert ungrounded_fields(M(value=42), "the value is 42.") == []
+    # ... but "42.5" and "3.42" must not
+    assert ungrounded_fields(M(value=42), "the value is 42.5") != []
+    assert ungrounded_fields(M(value=42), "pi-ish is 3.42") != []

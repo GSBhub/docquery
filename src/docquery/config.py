@@ -154,6 +154,10 @@ class Settings:
     temperature: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0")))
     # Natural language the source document is written in ("" = unspecified).
     doc_language: str = field(default_factory=lambda: os.getenv("DOC_LANGUAGE", ""))
+    # Grounding enforcement for LLM output against retrieved document text:
+    # "strict" retries/bounces on unsupported values, "warn" annotates and
+    # logs, "off" disables the checks. See docquery._grounding.
+    grounding: str = field(default_factory=lambda: os.getenv("GROUNDING", "strict"))
     llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "120")))
     llm_num_predict: int = field(default_factory=lambda: int(os.getenv("LLM_NUM_PREDICT", "2048")))
 
@@ -204,3 +208,7 @@ class Settings:
                 self.llm_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
             if not self.llm_api_key:
                 self.llm_api_key = os.getenv("OPENAI_API_KEY", "")
+
+        if self.grounding not in ("strict", "warn", "off"):
+            logger.warning("Unknown GROUNDING value %r; using 'strict'", self.grounding)
+            self.grounding = "strict"

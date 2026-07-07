@@ -94,7 +94,9 @@ def _is_verifiable_scalar(value: object) -> bool:
 
 def _scalar_in_text(value: object, text: str) -> bool:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if re.search(rf"(?<![\w.]){re.escape(str(value))}(?![\w.])", text):
+        # word-bounded, and not part of a longer decimal ("42" ≠ "42.5"/"3.42"),
+        # but a sentence-final "42." must still count
+        if re.search(rf"(?<!\w)(?<!\d\.){re.escape(str(value))}(?!\w|\.\d)", text):
             return True
         if isinstance(value, int):
             # the document may spell the same number in hex
