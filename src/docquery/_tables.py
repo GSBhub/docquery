@@ -289,6 +289,34 @@ def parse_table_lines(lines: "list[str]") -> "list[dict[str, Any]]":
     return tables
 
 
+def split_lines_by_kind(lines_by_page: "dict[int, list[str]]") -> "dict[str, dict[int, list[str]]]":
+    """Regroup ``{page: [TABLE/ROW lines]}`` into ``{kind: {page: [lines]}}``.
+
+    A page can hold tables of several kinds; each TABLE marker line starts a
+    block that owns the ROW lines after it.
+    """
+    result: dict[str, dict[int, list[str]]] = {}
+    for page, lines in lines_by_page.items():
+        kind = None
+        for line in lines:
+            if m := _TABLE_LINE_RE.match(line.strip()):
+                kind = m[1]
+            if kind is not None:
+                result.setdefault(kind, {}).setdefault(page, []).append(line)
+    return result
+
+
+def table_names(lines: "list[str]", name_column: str) -> "list[str]":
+    """Distinct non-empty *name_column* values across the tables in *lines*."""
+    names: list[str] = []
+    for t in parse_table_lines(lines):
+        for row in t["rows"]:
+            name = row.get(name_column, "").strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
 def extract_page_tables(page: Any, rules: "list[StructureRule]") -> "list[dict[str, Any]]":
     """Extract rule-matching tables from a pymupdf page object."""
     return tables_from_words(page.get_text("words"), rules)

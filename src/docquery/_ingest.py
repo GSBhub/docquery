@@ -220,24 +220,33 @@ def assign_sections(docs: list[Document], outline: list[dict], source: str) -> i
     return sectioned
 
 
-def build_encoding_documents(
+def build_structure_documents(
     source: str,
-    encodings_by_page: dict[int, list[str]],
+    kind: str,
+    lines_by_page: dict[int, list[str]],
     page_text: dict[int, str],
     page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+    intro: str,
+    names_by_page: dict[int, list[str]] | None = None,
+    entity_type: str | None = None,
 ) -> list[Document]:
-    """Build one Document per page that has extracted encoding bit-grids.
+    """Build one ``kind``-tagged Document per page that has structure lines.
 
     The document leads with the page's entity heading lines (or its first text
-    line as a fallback) so similarity search associates the ENCODING lines with
-    the instruction they belong to; the lines themselves are machine-parseable
-    (see :mod:`docquery._bitgrid`). Each heading is extended with the non-empty
-    page line that follows it — ISA manuals typically put the section number and
-    the instruction name on consecutive lines, and the *name* is what downstream
+    line as a fallback) so similarity search associates the machine-parseable
+    lines (see :mod:`docquery._bitgrid` / :mod:`docquery._tables`) with the
+    entity they belong to. Each heading is extended with the non-empty page
+    line that follows it — reference manuals typically put the section number
+    and the entity name on consecutive lines, and the *name* is what downstream
     consumers match on.
+
+    When ``names_by_page`` and ``entity_type`` are given, each page's names are
+    tagged as ``entity_<entity_type>`` metadata — the bridge that lets
+    cursor_enumerate walk a structured table's rows (interrupts, pins, …) like
+    any other entity type.
     """
     docs: list[Document] = []
-    for page, enc_lines in sorted(encodings_by_page.items()):
+    for page, enc_lines in sorted(lines_by_page.items()):
         text_lines = [ln.strip() for ln in (page_text.get(page) or "").splitlines()]
         headings: list[str] = []
 
@@ -258,16 +267,27 @@ def build_encoding_documents(
             first = next((ln for ln in text_lines if ln), "")
             if first:
                 headings.append(first)
-        content = "\n".join(
-            headings
-            + ["Bit-layout encoding (recovered from the document's bit-numbered diagram):"]
-            + enc_lines
-        )
-        docs.append(Document(
-            page_content=content,
-            metadata={"source": source, "page": page, "kind": "encoding_grid"},
-        ))
+        content = "\n".join(headings + [intro] + enc_lines)
+        metadata: dict = {"source": source, "page": page, "kind": kind}
+        if names_by_page and entity_type:
+            names = [n for n in names_by_page.get(page, []) if n.strip()]
+            if names:
+                _merge_entity_tag(metadata, f"{ENTITY_PREFIX}{entity_type}", names)
+        docs.append(Document(page_content=content, metadata=metadata))
     return docs
+
+
+def build_encoding_documents(
+    source: str,
+    encodings_by_page: dict[int, list[str]],
+    page_text: dict[int, str],
+    page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+) -> list[Document]:
+    """Build encoding-grid Documents (see :func:`build_structure_documents`)."""
+    return build_structure_documents(
+        source, "encoding_grid", encodings_by_page, page_text, page_entities,
+        intro="Bit-layout encoding (recovered from the document's bit-numbered diagram):",
+    )
 
 
 def _build_chroma(settings: Settings, collection_name: str = "db_knowledge") -> Chroma:
@@ -323,19 +343,40 @@ def ingest_documents(
     _normalize_pages(docs)
 
     rules = getattr(settings, "entity_rules", [])
+    structure_rules = getattr(settings, "structure_rules", [])
     # Pre-chunk pass over each PDF: match headings on whole-page text (immune to
     # chunk boundaries) and propagate onto the derived chunks; recover encoding
-    # bit-grids from page geometry (flattened beyond use by the text loader).
+    # bit-grids and rule-matching tables from page geometry (both flattened
+    # beyond use by the text loader).
     for p in file_paths:
         if str(p).lower().endswith(".pdf"):
             from docquery._bitgrid import extract_document_encodings
             from docquery._pdf import extract_outline, extract_page_text, persist_outline
+            from docquery._tables import extract_document_tables, split_lines_by_kind, table_names
             page_text = extract_page_text(p)
             page_entities = match_page_entities(page_text, rules) if rules else {}
             encodings_by_page = extract_document_encodings(p)
             if encodings_by_page:
                 docs.extend(build_encoding_documents(
                     str(p), encodings_by_page, page_text, page_entities,
+                ))
+            tables_by_page = extract_document_tables(p, structure_rules)
+            rules_by_kind = {r.kind: r for r in structure_rules}
+            for kind, kind_pages in split_lines_by_kind(tables_by_page).items():
+                rule = rules_by_kind.get(kind)
+                names_by_page = None
+                entity_type = None
+                if rule is not None and rule.name_column:
+                    names_by_page = {
+                        pg: table_names(lines, rule.name_column)
+                        for pg, lines in kind_pages.items()
+                    }
+                    entity_type = rule.entity_type or rule.kind
+                docs.extend(build_structure_documents(
+                    str(p), kind, kind_pages, page_text, page_entities,
+                    intro=f"Structured {kind.replace('_', ' ')} (recovered from the document's table layout):",
+                    names_by_page=names_by_page,
+                    entity_type=entity_type,
                 ))
             if page_entities:
                 propagate_page_entities(docs, page_entities, str(p))
