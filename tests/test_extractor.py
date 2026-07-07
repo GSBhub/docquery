@@ -209,6 +209,26 @@ def test_off_grounding_skips_check(mock_llm, mock_tool, settings):
     assert state["validated"] is not None
 
 
+def test_strict_grounding_rejects_mispaired_record(mock_llm, mock_tool, settings):
+    # context has NMI→0x08 and HardFault→0x0C on separate rows; the model
+    # pairs NMI with HardFault's address — presence passes, association fails
+    class Vec(BaseModel):
+        name: str
+        address: str
+
+    settings.grounding = "strict"
+    mock_tool.invoke.return_value = (
+        "ROW 2 | NMI | 0x00000008\nROW 3 | HardFault | 0x0000000C")
+    mock_llm.invoke.return_value = _make_response(
+        json.dumps({"name": "NMI", "address": "0x0C"}))
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        mock_llm, mock_tool, Vec, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] is None
+    assert any("Wrongly associated" in e for e in state["validation_errors"])
+
+
 def test_grounded_values_pass_strict(mock_llm, mock_tool, settings):
     settings.grounding = "strict"
     mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 42}))

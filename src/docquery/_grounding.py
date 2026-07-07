@@ -111,6 +111,40 @@ def _scalar_in_text(value: object, text: str) -> bool:
     return False
 
 
+def _record_scalars(record: dict) -> list[object]:
+    """Direct verifiable scalar leaves of one record (no recursion)."""
+    return [v for v in record.values() if _is_verifiable_scalar(v)]
+
+
+def ungrounded_records(instance: object, context: str, _prefix: str = "") -> list[str]:
+    """Records whose verifiable values never co-occur on one context line.
+
+    Presence alone cannot catch association errors: pairing NMI with
+    HardFault's address passes a presence check because both tokens exist
+    somewhere in the context. A record (dict/model with two or more
+    verifiable scalar fields) is grounded only if some single line of the
+    context contains all of its verifiable values — which the machine-
+    parseable ROW/ENCODING lines guarantee for correctly-paired data.
+    """
+    misses: list[str] = []
+    if hasattr(instance, "model_dump"):
+        instance = instance.model_dump()
+    if isinstance(instance, dict):
+        scalars = _record_scalars(instance)
+        if len(scalars) >= 2:
+            lines = [ln for ln in context.splitlines() if ln.strip()]
+            if not any(all(_scalar_in_text(v, ln) for v in scalars) for ln in lines):
+                pairing = ", ".join(repr(v) for v in scalars)
+                misses.append(f"{_prefix.rstrip('.') or 'record'}: ({pairing})")
+        for key, value in instance.items():
+            if isinstance(value, (dict, list, tuple)) or hasattr(value, "model_dump"):
+                misses.extend(ungrounded_records(value, context, f"{_prefix}{key}."))
+    elif isinstance(instance, (list, tuple)):
+        for i, value in enumerate(instance):
+            misses.extend(ungrounded_records(value, context, f"{_prefix}{i}."))
+    return misses
+
+
 def ungrounded_fields(instance: object, context: str, _prefix: str = "") -> list[str]:
     """Verifiable leaves of a (nested) model/dict/list absent from *context*.
 

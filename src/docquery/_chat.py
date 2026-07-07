@@ -74,6 +74,11 @@ RULES:
 - NEVER reply that you cannot find information without first calling similarity_search.
 - Always attempt at least one tool call before answering.
 - When results are returned, synthesise them into a clear answer and cite the page number(s).
+- The document is the ONLY source of truth. State values (addresses, bit positions, \
+encodings, numbers) exactly as they appear in tool output — never from prior knowledge, \
+and never "corrected". If the document does not contain a value, say so.
+- When answering from ENCODING or TABLE/ROW lines, reproduce the relevant lines VERBATIM \
+in a code block and explain around them; do not re-type their values into prose.
 - If you genuinely cannot find relevant content after searching, say so and suggest rephrasing.\
 """
 
