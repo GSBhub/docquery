@@ -203,3 +203,32 @@ def test_sentence_final_number_grounds_but_decimal_part_does_not():
     # ... but "42.5" and "3.42" must not
     assert ungrounded_fields(M(value=42), "the value is 42.5") != []
     assert ungrounded_fields(M(value=42), "pi-ish is 3.42") != []
+
+
+def test_record_named_in_heading_valued_on_machine_line_is_grounded():
+    from docquery._grounding import ungrounded_records
+
+    # The mnemonic lives on the heading line; width and bits on the ENCODING
+    # line. That is how structure documents are built — must not be flagged.
+    class Enc(BaseModel):
+        mnemonic: str
+        width_bits: int
+        fixed_bits: str
+
+    ctx = ("A7.7.4\nADD (register)\n"
+           "Bit-layout encoding (recovered from the document's bit-numbered diagram):\n"
+           "ENCODING 16-bit: bits[15:9]=0001100 Rm[8:6] Rn[5:3] Rd[2:0]\n"
+           "ENCODING 32-bit: bits[31:21]=11101011000 S[20:20] Rd[11:8]")
+    assert ungrounded_records(Enc(mnemonic="ADD", width_bits=16, fixed_bits="0001100"), ctx) == []
+    # Values must still come from ONE machine line: mixing the 16-bit width
+    # with the 32-bit line's opcode is a wrong association.
+    (miss,) = ungrounded_records(Enc(mnemonic="ADD", width_bits=16, fixed_bits="11101011000"), ctx)
+    assert "11101011000" in miss
+
+
+def test_heading_augmentation_does_not_merge_two_data_lines():
+    from docquery._grounding import ungrounded_records
+
+    ctx = ("Exception model\nStructured interrupt table:\n" + ROWS)
+    v = Vector(name="NMI", address="0x0C")  # HardFault's address
+    assert ungrounded_records(v, ctx)  # still flagged with headings present
