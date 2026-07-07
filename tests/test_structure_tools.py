@@ -86,6 +86,23 @@ def test_lookup_by_entity_substring_fallback(structured_store):
     assert "ENCODING 16-bit" in tool.invoke({"entity": "add"})
 
 
+def test_lookup_by_entity_in_heading_lines(structured_store):
+    # Real ingest rules often capture the SECTION NUMBER as the entity name
+    # ("A7.7.4"), while the mnemonic only appears in the doc's heading lines.
+    structured_store.add_documents([Document(
+        page_content="A7.7.12\nCMP (immediate)\nBit-layout encoding:\n"
+                     "ENCODING 16-bit: bits[15:11]=00101 Rn[10:8] imm8[7:0]",
+        metadata={"source": "m.pdf", "page": 210, "kind": "encoding_grid",
+                  "entity_instruction": "A7.7.12"},
+    )])
+    tool = make_structure_lookup_tool(structured_store)
+    out = tool.invoke({"kind": "encoding_grid", "entity": "CMP"})
+    assert "bits[15:11]=00101" in out
+    # Machine lines are NOT headings: a field name must not match as an entity.
+    assert tool.invoke({"kind": "encoding_grid", "entity": "imm8"}).startswith(
+        "No structured regions match")
+
+
 def test_lookup_by_section(structured_store):
     tool = make_structure_lookup_tool(structured_store)
     out = tool.invoke({"kind": "register_fields", "section": "B2.1"})
