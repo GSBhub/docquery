@@ -6,10 +6,45 @@ from langsmith import traceable
 
 from docquery.config import Settings, language_directive
 from docquery.embeddings.llm import get_llm
+from docquery._grounding import unsupported_claims
 from docquery._state import ChatState
 from docquery.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Prefix for guardrail messages the verifier injects into the conversation.
+# They are invisible to the caller (chat() returns only the final answer) but
+# let the verifier distinguish its own nudges from real user messages.
+_GUARDRAIL_MARK = "[docquery-guardrail]"
+
+_NO_TOOLS_NUDGE = (
+    f"{_GUARDRAIL_MARK} You answered without consulting the document. Call at "
+    "least one tool (similarity_search, structure_lookup, keyword_search, ...) "
+    "and answer ONLY from its output."
+)
+_UNGROUNDED_NUDGE = (
+    f"{_GUARDRAIL_MARK} These values in your answer are not present in the "
+    "document excerpts you retrieved: {misses}. Correct or remove them — quote "
+    "values exactly as the tools returned them, and say so if the document "
+    "does not contain the answer."
+)
+_UNGROUNDED_NOTE = (
+    "\n\n[grounding warning] These values could not be verified against the "
+    "document: {misses}"
+)
+_NO_TOOLS_NOTE = (
+    "\n\n[grounding warning] This answer was produced without consulting the "
+    "document."
+)
+
+
+def _turn_messages(messages: list) -> list:
+    """Messages after the last real (non-guardrail) user message."""
+    start = 0
+    for i, m in enumerate(messages):
+        if isinstance(m, HumanMessage) and not str(m.content).startswith(_GUARDRAIL_MARK):
+            start = i
+    return messages[start + 1:]
 
 _SYSTEM_PROMPT = """\
 You are a document analysis assistant. \
@@ -89,15 +124,67 @@ class ChatAgent:
             last = state["messages"][-1]
             if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
                 return "execute_tools"
+            return "verify"
+
+        @traceable(name="verify")
+        def verify(state: ChatState) -> ChatState:
+            """Deterministic grounding gate on the turn's final answer.
+
+            Structural rule: an answer produced with zero tool calls is bounced
+            back once. Grounding rule: verifiable claims in the answer (hex,
+            bit ranges, machine lines) must appear in this turn's tool output;
+            in strict mode unsupported claims bounce the answer back once with
+            the exact offending values, after which (or in warn mode) the
+            answer is annotated instead. No LLM judging — pure string checks.
+            """
+            messages = list(state["messages"])
+            mode = self._settings.grounding
+            if mode == "off":
+                return {"messages": messages}
+
+            turn = _turn_messages(messages)
+            answer = messages[-1]
+            if not isinstance(answer, AIMessage):
+                return {"messages": messages}
+            nudges = [m.content for m in turn
+                      if isinstance(m, HumanMessage) and str(m.content).startswith(_GUARDRAIL_MARK)]
+            tool_text = "\n".join(str(m.content) for m in turn if isinstance(m, ToolMessage))
+
+            if not tool_text:
+                if mode == "strict" and not any("without consulting" in n for n in nudges):
+                    logger.info("verify: no tool calls this turn — bouncing answer")
+                    return {"messages": messages + [HumanMessage(content=_NO_TOOLS_NUDGE)]}
+                logger.warning("verify: answer produced without tool output")
+                messages[-1] = AIMessage(content=str(answer.content) + _NO_TOOLS_NOTE)
+                return {"messages": messages}
+
+            misses = unsupported_claims(str(answer.content), tool_text)
+            if not misses:
+                return {"messages": messages}
+            if mode == "strict" and not any("not present in the document" in n for n in nudges):
+                logger.info("verify: ungrounded claims %s — bouncing answer", misses)
+                nudge = _UNGROUNDED_NUDGE.format(misses=", ".join(misses))
+                return {"messages": messages + [HumanMessage(content=nudge)]}
+            logger.warning("verify: ungrounded claims in final answer: %s", misses)
+            messages[-1] = AIMessage(
+                content=str(answer.content) + _UNGROUNDED_NOTE.format(misses=", ".join(misses)))
+            return {"messages": messages}
+
+        def after_verify(state: ChatState):
+            last = state["messages"][-1]
+            if isinstance(last, HumanMessage) and str(last.content).startswith(_GUARDRAIL_MARK):
+                return "agent"
             return END
 
         graph = StateGraph(ChatState)
         graph.add_node("agent", agent)
         graph.add_node("execute_tools", execute_tools)
+        graph.add_node("verify", verify)
         graph.add_edge(START, "agent")
         graph.add_conditional_edges("agent", should_call_tools,
-                                    {"execute_tools": "execute_tools", END: END})
+                                    {"execute_tools": "execute_tools", "verify": "verify"})
         graph.add_edge("execute_tools", "agent")
+        graph.add_conditional_edges("verify", after_verify, {"agent": "agent", END: END})
         return graph.compile()
 
     @traceable(name="chat")
