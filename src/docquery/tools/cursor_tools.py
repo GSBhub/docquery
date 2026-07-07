@@ -144,13 +144,16 @@ Use for tasks like "list every instruction" or "find all error codes"."""
                 f"Call cursor_current to see the first, then cursor_next to advance.")
 
     @tool
-    def cursor_enumerate(entity_type: str, section: str | None = None) -> str:
-        """Enumerate EVERY tagged entity of a given type (e.g. "instruction", "register") \
-across the whole document — deterministic and complete, unlike fuzzy cursor_count. \
-Requires the document to have been ingested with entity rules. Freezes one item per \
-distinct entity, ordered by document section then page; then call cursor_current / \
-cursor_next to iterate. Pass an optional section title (or path fragment) to scope \
-enumeration to that section. Calling this with an unknown type lists the available types."""
+    def cursor_enumerate(entity_type: str, section: str | None = None,
+                         kind: str | None = None) -> str:
+        """Enumerate EVERY tagged entity of a given type (e.g. "instruction", "register", \
+"interrupt", "pin") across the whole document — deterministic and complete, unlike fuzzy \
+cursor_count. Requires the document to have been ingested with entity rules (or structure \
+rules that name table rows). Freezes one item per distinct entity, ordered by document \
+section then page; then call cursor_current / cursor_next to iterate. Pass an optional \
+section title (or path fragment) to scope enumeration to that section, and/or a kind \
+(e.g. "encoding_grid") to walk only entities carried by that structured-region kind. \
+Calling this with an unknown type lists the available types."""
         try:
             collection = vector_store._collection  # type: ignore[attr-defined]
         except Exception:
@@ -170,6 +173,8 @@ enumeration to that section. Calling this with an unknown type lists the availab
             meta = meta or {}
             val = meta.get(key)
             if not val:
+                continue
+            if kind is not None and meta.get("kind") != kind:
                 continue
             if section is not None:
                 sec = str(meta.get("section") or "")
@@ -193,8 +198,10 @@ enumeration to that section. Calling this with an unknown type lists the availab
                 })
 
         if not items:
-            if section is not None:
-                return (f"No {entity_type} entities found in section {section!r}.")
+            if section is not None or kind is not None:
+                scope = f" in section {section!r}" if section is not None else ""
+                scope += f" with kind {kind!r}" if kind is not None else ""
+                return f"No {entity_type} entities found{scope}."
             types = sorted({k[len(ENTITY_PREFIX):] for m in metas if m
                             for k in m if k.startswith(ENTITY_PREFIX)})
             if types:
