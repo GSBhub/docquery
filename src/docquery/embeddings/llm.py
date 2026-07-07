@@ -28,6 +28,20 @@ def get_llm(settings: Settings | None = None) -> BaseChatModel:
             temperature=temp,
         )
 
+    if settings.llm_provider == "azure":
+        from langchain_openai import AzureChatOpenAI
+        if not settings.llm_base_url:
+            raise ValueError(
+                "LLM_PROVIDER=azure requires an endpoint: "
+                "set AZURE_OPENAI_ENDPOINT or LLM_BASE_URL")
+        return AzureChatOpenAI(
+            azure_endpoint=settings.llm_base_url,
+            azure_deployment=settings.llm_model,
+            api_version=settings.llm_api_version or None,
+            api_key=settings.llm_api_key or None,
+            temperature=temp,
+        )
+
     from langchain_openai import ChatOpenAI
     return ChatOpenAI(
         model=settings.llm_model,

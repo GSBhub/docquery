@@ -29,6 +29,21 @@ def get_embeddings(settings: Settings | None = None) -> Embeddings:
             base_url=settings.embed_base_url,
         )
 
+    if settings.embed_provider == "azure":
+        from langchain_openai import AzureOpenAIEmbeddings
+        if not settings.embed_base_url:
+            raise ValueError(
+                "EMBED_PROVIDER=azure requires an endpoint: "
+                "set AZURE_OPENAI_ENDPOINT or EMBED_BASE_URL")
+        # Azure speaks the real OpenAI embeddings protocol, so the
+        # non-openai base-url heuristic below must not apply to it.
+        return AzureOpenAIEmbeddings(
+            azure_endpoint=settings.embed_base_url,
+            azure_deployment=settings.embed_model,
+            api_version=settings.embed_api_version or None,
+            api_key=settings.embed_api_key or None,
+        )
+
     from langchain_openai import OpenAIEmbeddings
 
     # Disable the embedding ctx + embeddings vector input type 

@@ -50,11 +50,15 @@ class Settings:
     embed_api_key: str = field(default_factory=lambda: os.getenv("EMBED_API_KEY", ""))
     embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "text-embedding-3-small"))
     embed_batch_size: int = field(default_factory=lambda: int(os.getenv("EMBED_BATCH_SIZE", "32")))
+    # Azure only: API version for the embeddings deployment (embed_model).
+    embed_api_version: str = field(default_factory=lambda: os.getenv("EMBED_API_VERSION", ""))
 
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "openai"))
     llm_base_url: str = field(default_factory=lambda: os.getenv("LLM_BASE_URL", ""))
     llm_api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gpt-4o-mini"))
+    # Azure only: API version for the chat deployment (llm_model).
+    llm_api_version: str = field(default_factory=lambda: os.getenv("LLM_API_VERSION", ""))
 
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "rag.db"))
     chunk_size: int = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "2000")))
@@ -77,17 +81,33 @@ class Settings:
         if not self.embed_base_url:
             if self.embed_provider == "ollama":
                 self.embed_base_url = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            elif self.embed_provider == "azure":
+                self.embed_base_url = os.getenv("AZURE_OPENAI_ENDPOINT", "")
             else:
                 self.embed_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
         if not self.llm_base_url:
             if self.llm_provider == "ollama":
                 self.llm_base_url = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            elif self.llm_provider == "azure":
+                self.llm_base_url = os.getenv("AZURE_OPENAI_ENDPOINT", "")
             else:
                 self.llm_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
+        if not self.embed_api_version:
+            self.embed_api_version = os.getenv("OPENAI_API_VERSION", "")
+
+        if not self.llm_api_version:
+            self.llm_api_version = os.getenv("OPENAI_API_VERSION", "")
+
         if not self.embed_api_key:
-            self.embed_api_key = os.getenv("OPENAI_API_KEY", "")
+            if self.embed_provider == "azure":
+                self.embed_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+            if not self.embed_api_key:
+                self.embed_api_key = os.getenv("OPENAI_API_KEY", "")
 
         if not self.llm_api_key:
-            self.llm_api_key = os.getenv("OPENAI_API_KEY", "")
+            if self.llm_provider == "azure":
+                self.llm_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+            if not self.llm_api_key:
+                self.llm_api_key = os.getenv("OPENAI_API_KEY", "")
