@@ -57,3 +57,43 @@ def entity_coverage(settings: "Settings", collection_name: str = "db_knowledge")
         }
         for etype, names in sorted(per_type.items())
     }
+
+
+def kind_coverage(settings: "Settings", collection_name: str = "db_knowledge") -> dict[str, dict[str, Any]]:
+    """Count structured-region documents per kind, with page and section spread.
+
+    Returns ``{kind: {"count": <docs>, "pages": <distinct pages>,
+    "by_section": {section_title: <docs>}}}``. Documents without a ``kind``
+    are ignored. Returns ``{}`` for an empty/unreachable store.
+    """
+    from docquery._ingest import _build_chroma
+    vs = _build_chroma(settings, collection_name)
+    try:
+        collection = vs._collection  # type: ignore[attr-defined]
+        raw = collection.get(include=["metadatas"])
+    except Exception:
+        logger.warning("kind_coverage: collection %r not accessible", collection_name)
+        return {}
+
+    counts: dict[str, int] = {}
+    pages: dict[str, set] = {}
+    by_section: dict[str, dict[str, int]] = {}
+    for meta in raw.get("metadatas") or []:
+        meta = meta or {}
+        kind = meta.get("kind")
+        if not kind:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+        pages.setdefault(kind, set()).add(meta.get("page"))
+        section = str(meta.get("section") or "")
+        sec_counts = by_section.setdefault(kind, {})
+        sec_counts[section] = sec_counts.get(section, 0) + 1
+
+    return {
+        kind: {
+            "count": n,
+            "pages": len(pages.get(kind, set())),
+            "by_section": dict(sorted(by_section.get(kind, {}).items())),
+        }
+        for kind, n in sorted(counts.items())
+    }

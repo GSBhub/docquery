@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from docquery.config import EntityRule, Settings
+from docquery.config import EntityRule, Settings, StructureRule
 from docquery._chat import ChatSession
 
 if TYPE_CHECKING:
@@ -144,5 +144,49 @@ def coverage(db_path: str | None = None, *, settings: Settings | None = None) ->
     return entity_coverage(s)
 
 
+def structures(
+    kind: str | None = None,
+    *,
+    db_path: str | None = None,
+    settings: Settings | None = None,
+) -> list[dict]:
+    """Return parsed structured regions (bit encodings, classified tables).
+
+    Args:
+        kind: Restrict to one structured kind (e.g. ``"encoding_grid"``,
+            ``"register_fields"``). None returns every kind.
+        db_path: Path to the ChromaDB store. Ignored if ``settings`` is given.
+        settings: Optional Settings instance. If None, constructed from env vars.
+
+    Returns:
+        ``[{"kind", "source", "page", "section", "entities", "lines",
+        "records"}]`` ordered by source then page; ``records`` holds the parsed
+        machine lines (encoding segments / table rows).
+    """
+    from docquery._structures import get_structures
+    s = settings or Settings()
+    if db_path is not None:
+        s.db_path = db_path
+    return get_structures(s, kind)
+
+
+def structure_coverage(db_path: str | None = None, *, settings: Settings | None = None) -> dict[str, dict]:
+    """Return counts of structured-region documents per kind.
+
+    Args:
+        db_path: Path to the ChromaDB store. Ignored if ``settings`` is given.
+        settings: Optional Settings instance. If None, constructed from env vars.
+
+    Returns:
+        ``{kind: {"count": int, "pages": int, "by_section": {title: int}}}``.
+    """
+    from docquery._coverage import kind_coverage
+    s = settings or Settings()
+    if db_path is not None:
+        s.db_path = db_path
+    return kind_coverage(s)
+
+
 __all__ = ["ingest", "query", "chat_session", "outline", "coverage",
-           "ChatSession", "Settings", "EntityRule"]
+           "structures", "structure_coverage",
+           "ChatSession", "Settings", "EntityRule", "StructureRule"]
