@@ -1,4 +1,5 @@
 import logging
+import re
 
 from langchain_core.tools import BaseTool, tool
 
@@ -7,6 +8,9 @@ from langchain_chroma.vectorstores import Chroma
 from docquery.config import ENTITY_PREFIX
 
 logger = logging.getLogger(__name__)
+
+# Heading block of a structure doc: everything before the first machine line.
+_MACHINE_PREFIXES = ("ENCODING ", "TABLE ", "ROW ")
 
 
 def _where(conds: dict) -> dict | None:
@@ -30,6 +34,26 @@ def _entity_names(meta: dict) -> list[str]:
         if key.startswith(ENTITY_PREFIX):
             names.extend(n.strip() for n in str(val).split(";") if n.strip())
     return names
+
+
+def _entity_in_headings(entity: str, content: str) -> bool:
+    """Word-boundary, case-insensitive match against the doc's heading block.
+
+    Entity metadata often carries the *section number* (whatever the ingest
+    rule captured, e.g. "A7.7.4") while the human-facing name ("ADD") lives in
+    the heading lines that ``build_structure_documents`` prepends. Matching
+    those lines lets ``entity="ADD"`` find the grid without requiring a rule
+    that captures names.
+    """
+    headings = []
+    for line in content.splitlines():
+        if line.strip().startswith(_MACHINE_PREFIXES):
+            break
+        headings.append(line)
+    return bool(re.search(
+        rf"(?i)(?<![A-Za-z0-9]){re.escape(entity)}(?![A-Za-z0-9])",
+        "\n".join(headings),
+    ))
 
 
 def _structure_lookup(
@@ -64,8 +88,10 @@ def _structure_lookup(
                 continue
         if entity is not None:
             names = _entity_names(meta)
-            if entity not in names and not any(
-                entity.lower() in n.lower() for n in names
+            if (
+                entity not in names
+                and not any(entity.lower() in n.lower() for n in names)
+                and not _entity_in_headings(entity, content)
             ):
                 continue
         results.append({
