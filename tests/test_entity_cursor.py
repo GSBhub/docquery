@@ -163,3 +163,47 @@ def test_enumerate_unknown_section_reports_empty(vector_store):
     _, enumerate_, _, _ = make_cursor_tools(store, Settings())
     msg = enumerate_.invoke({"entity_type": "instruction", "section": "Crypto"})
     assert "No instruction entities found in section 'Crypto'" in msg
+
+
+# --- cursor_enumerate kind scoping + bridged table rows --------------------
+
+def _store_with_kinds(vector_store):
+    vector_store.add_documents([
+        Document(page_content="ADD encoding doc",
+                 metadata={"source": "m.pdf", "page": 5, "kind": "encoding_grid",
+                           "entity_instruction": "ADD"}),
+        Document(page_content="ADC prose chunk",
+                 metadata={"source": "m.pdf", "page": 2,
+                           "entity_instruction": "ADC"}),
+        Document(page_content="Structured interrupt table\nROW 2 | NMI",
+                 metadata={"source": "m.pdf", "page": 40, "kind": "interrupt_table",
+                           "entity_interrupt": "NMI;HardFault"}),
+    ])
+    return vector_store
+
+
+def test_enumerate_kind_filter_scopes_to_structured_docs(vector_store):
+    store = _store_with_kinds(vector_store)
+    _, enumerate_, current, _ = make_cursor_tools(store, Settings())
+    # only ADD has an encoding grid; prose-only ADC is excluded
+    msg = enumerate_.invoke({"entity_type": "instruction", "kind": "encoding_grid"})
+    assert "Found 1 distinct instruction" in msg
+    assert "ADD" in current.invoke({})
+
+
+def test_enumerate_walks_bridged_table_rows(vector_store):
+    # entity_interrupt came from a table's name column at ingest — rows are
+    # enumerable exactly like heading-derived entities.
+    store = _store_with_kinds(vector_store)
+    _, enumerate_, current, nxt = make_cursor_tools(store, Settings())
+    msg = enumerate_.invoke({"entity_type": "interrupt"})
+    assert "Found 2 distinct interrupt" in msg
+    assert "NMI" in current.invoke({})
+    assert "HardFault" in nxt.invoke({})
+
+
+def test_enumerate_kind_filter_empty_reports_kind(vector_store):
+    store = _store_with_kinds(vector_store)
+    _, enumerate_, _, _ = make_cursor_tools(store, Settings())
+    msg = enumerate_.invoke({"entity_type": "interrupt", "kind": "encoding_grid"})
+    assert "No interrupt entities found" in msg and "encoding_grid" in msg
