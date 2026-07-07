@@ -89,6 +89,42 @@ def _parse_entity_rules(specs: list[str] | None):
     return rules
 
 
+def _parse_structure_rules(specs: list[str] | None):
+    """Parse repeated --structure KIND=JSON specs into StructureRule objects.
+
+    JSON is either a list of header synonym groups, or an object with
+    "headers" plus optional "name_column" / "entity_type".
+    """
+    from docquery.config import StructureRule
+
+    rules = []
+    for spec in specs or []:
+        if "=" not in spec:
+            print(f"Error: --structure must be KIND=JSON, got {spec!r}")
+            raise SystemExit(1)
+        kind, payload = spec.split("=", 1)
+        kind = kind.strip()
+        try:
+            data = json.loads(payload)
+        except ValueError as exc:
+            print(f"Error: --structure {kind}: invalid JSON ({exc})")
+            raise SystemExit(1)
+        if isinstance(data, list):
+            rules.append(StructureRule(kind=kind, headers=[list(g) for g in data]))
+        elif isinstance(data, dict) and "headers" in data:
+            rules.append(StructureRule(
+                kind=kind,
+                headers=[list(g) for g in data["headers"]],
+                name_column=data.get("name_column"),
+                entity_type=data.get("entity_type"),
+            ))
+        else:
+            print(f"Error: --structure {kind}: JSON must be a list of header "
+                  f"synonym groups or an object with \"headers\"")
+            raise SystemExit(1)
+    return rules
+
+
 def cmd_ingest(args: argparse.Namespace) -> None:
     from docquery.config import Settings
     import docquery
@@ -104,6 +140,14 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     cli_rules = _parse_entity_rules(getattr(args, "entity", None))
     if cli_rules:
         settings.entity_rules = cli_rules
+
+    cli_structure_rules = _parse_structure_rules(getattr(args, "structure", None))
+    if cli_structure_rules:
+        # CLI rules add to (or override, by kind) the defaults + env rules.
+        merged = {r.kind: r for r in settings.structure_rules}
+        for r in cli_structure_rules:
+            merged[r.kind] = r
+        settings.structure_rules = list(merged.values())
 
     count = docquery.ingest(args.files, settings=settings)
     print(f"Done — {count} documents added to {settings.vs._collection_name} collection")
@@ -146,6 +190,34 @@ def cmd_query(args: argparse.Namespace) -> None:
         settings=settings,
     )
     print(result.model_dump_json(indent=2))
+
+
+def cmd_structures(args: argparse.Namespace) -> None:
+    import docquery
+
+    kwargs = {"db_path": args.db} if args.db else {}
+    if not args.kind:
+        cov = docquery.structure_coverage(**kwargs)
+        if not cov:
+            print("No structured regions found in the store.")
+            return
+        width = max(len(k) for k in cov)
+        print(f"{'kind':<{width}}  docs  pages")
+        for kind, stats in cov.items():
+            print(f"{kind:<{width}}  {stats['count']:>4}  {stats['pages']:>5}")
+        return
+
+    results = docquery.structures(args.kind, **kwargs)
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return
+    if not results:
+        print(f"No structured regions of kind {args.kind!r} found.")
+        return
+    for r in results:
+        print(f"[{r['source']} p.{r['page']}]")
+        for line in r["lines"]:
+            print(f"  {line}")
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
@@ -196,6 +268,11 @@ def main() -> None:
     p_ingest.add_argument("--entity", action="append", metavar="NAME=REGEX", default=None,
                           help="Tag chunks matching REGEX as entity NAME for cursor_enumerate "
                                "(repeatable), e.g. --entity instruction='^A7\\.7\\.\\d+\\s+([A-Z][A-Z0-9.]+)'")
+    p_ingest.add_argument("--structure", action="append", metavar="KIND=JSON", default=None,
+                          help="Add or override a table-classification rule (repeatable). JSON is a "
+                               "list of header synonym groups or {\"headers\": ..., \"name_column\": ..., "
+                               "\"entity_type\": ...}, e.g. "
+                               "--structure 'dma_table=[[\"channel\"],[\"request\",\"source\"]]'")
     _add_common_args(p_ingest)
 
     # query
@@ -221,6 +298,17 @@ def main() -> None:
     _add_common_args(p_chat)
     _add_inference_args(p_chat)
 
+    # structures
+    p_structures = sub.add_parser(
+        "structures",
+        help="Show structured regions extracted at ingest (bit encodings, classified tables)",
+    )
+    p_structures.add_argument("--kind", default=None, metavar="KIND",
+                              help="Print the regions of one kind; omit for a per-kind summary")
+    p_structures.add_argument("--json", action="store_true",
+                              help="Emit parsed records as JSON (with --kind)")
+    _add_common_args(p_structures)
+
     args = parser.parse_args()
 
     from docquery.logging_config import setup_logging
@@ -233,6 +321,8 @@ def main() -> None:
         cmd_query(args)
     elif args.command == "chat":
         cmd_chat(args)
+    elif args.command == "structures":
+        cmd_structures(args)
 
 
 if __name__ == "__main__":
