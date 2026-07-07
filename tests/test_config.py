@@ -68,3 +68,51 @@ def test_docquery_specific_key_takes_priority_over_openai(monkeypatch):
     monkeypatch.setenv("EMBED_API_KEY", "sk-specific")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-generic")
     assert Settings().embed_api_key == "sk-specific"
+
+
+def test_azure_base_url_from_azure_endpoint(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "azure")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://myresource.openai.azure.com")
+    s = Settings()
+    assert s.llm_base_url == "https://myresource.openai.azure.com"
+    assert "api.openai.com" not in s.llm_base_url
+
+
+def test_azure_embed_base_url_from_azure_endpoint(monkeypatch):
+    monkeypatch.setenv("EMBED_PROVIDER", "azure")
+    monkeypatch.delenv("EMBED_BASE_URL", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://myresource.openai.azure.com")
+    assert Settings().embed_base_url == "https://myresource.openai.azure.com"
+
+
+def test_azure_api_version_fallback_to_openai_api_version(monkeypatch):
+    monkeypatch.delenv("LLM_API_VERSION", raising=False)
+    monkeypatch.delenv("EMBED_API_VERSION", raising=False)
+    monkeypatch.setenv("OPENAI_API_VERSION", "2024-10-21")
+    s = Settings()
+    assert s.llm_api_version == "2024-10-21"
+    assert s.embed_api_version == "2024-10-21"
+
+
+def test_azure_api_key_beats_openai_key_for_azure(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "azure")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-generic")
+    assert Settings().llm_api_key == "sk-azure"
+
+
+def test_explicit_llm_api_key_beats_azure_key(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "azure")
+    monkeypatch.setenv("LLM_API_KEY", "sk-explicit")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure")
+    assert Settings().llm_api_key == "sk-explicit"
+
+
+def test_azure_key_not_used_for_non_azure_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-generic")
+    assert Settings().llm_api_key == "sk-generic"

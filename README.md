@@ -50,19 +50,49 @@ LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 ```
 
+### Azure OpenAI
+
+For Azure, `*_MODEL` is the **deployment name** (not the model name) and the
+endpoint is your resource URL. `AZURE_OPENAI_ENDPOINT` and
+`AZURE_OPENAI_API_KEY` are used automatically when `*_BASE_URL` / `*_API_KEY`
+are not set.
+
+```env
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_API_KEY=...
+
+EMBED_PROVIDER=azure
+EMBED_MODEL=your-embedding-deployment
+EMBED_API_VERSION=2024-10-21
+
+LLM_PROVIDER=azure
+LLM_MODEL=your-chat-deployment
+LLM_API_VERSION=2024-10-21
+```
+
+### Anthropic
+
+```env
+LLM_PROVIDER=anthropic          # requires: pip install docquery[anthropic]
+LLM_MODEL=claude-sonnet-4-6
+LLM_API_KEY=sk-ant-...
+```
+
 ### All settings
 
 | Variable | Default | Description |
 |---|---|---|
-| `EMBED_PROVIDER` | `openai` | `openai` or `ollama` |
-| `EMBED_BASE_URL` | `https://api.openai.com/v1` | Embedding endpoint |
+| `EMBED_PROVIDER` | `openai` | `openai`, `ollama`, or `azure` |
+| `EMBED_BASE_URL` | `https://api.openai.com/v1` | Embedding endpoint (Azure: resource endpoint) |
 | `EMBED_API_KEY` | — | API key (`ollama` for local) |
-| `EMBED_MODEL` | `text-embedding-3-small` | Embedding model name |
+| `EMBED_MODEL` | `text-embedding-3-small` | Embedding model name (Azure: deployment name) |
 | `EMBED_BATCH_SIZE` | `32` | Chunks per embedding API call |
-| `LLM_PROVIDER` | `openai` | `openai` or `ollama` |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | LLM endpoint |
+| `EMBED_API_VERSION` | — | Azure only: API version (falls back to `OPENAI_API_VERSION`) |
+| `LLM_PROVIDER` | `openai` | `openai`, `ollama`, `anthropic`, or `azure` |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | LLM endpoint (Azure: resource endpoint) |
 | `LLM_API_KEY` | — | API key |
-| `LLM_MODEL` | `gpt-4o-mini` | LLM model name |
+| `LLM_MODEL` | `gpt-4o-mini` | LLM model name (Azure: deployment name) |
+| `LLM_API_VERSION` | — | Azure only: API version (falls back to `OPENAI_API_VERSION`) |
 | `DB_PATH` | `rag.db` | SQLite database file |
 | `CHUNK_SIZE` | `2000` | Max characters per chunk (Unstructured `max_characters`) |
 | `CHUNK_OVERLAP` | `200` | Characters carried between chunks; keeps headings split across a boundary intact for entity enumeration |
@@ -305,8 +335,8 @@ src/docquery/
 ├── _nodes.py               # retrieve / extract / validate / retry graph nodes
 ├── _state.py               # ExtractionState, ChatState TypedDicts
 ├── embeddings/
-│   ├── provider.py         # get_embeddings() — OpenAI or Ollama
-│   └── llm.py              # get_llm() — OpenAI or Ollama
+│   ├── provider.py         # get_embeddings() — OpenAI, Ollama, or Azure
+│   └── llm.py              # get_llm() — OpenAI, Ollama, Anthropic, or Azure
 └── tools/
     ├── retrieval_tools.py  # similarity_search tool
     ├── page_tools.py       # page_lookup tool
