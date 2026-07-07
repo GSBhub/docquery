@@ -19,6 +19,9 @@ def _add_inference_args(parser: argparse.ArgumentParser) -> None:
                         help="Number of similarity results to retrieve (overrides TOP_K env var)")
     parser.add_argument("--temperature", type=float, default=None,
                         help="LLM sampling temperature 0–2 (overrides TEMPERATURE env var, default 0)")
+    parser.add_argument("--doc-language", default=None, metavar="LANG",
+                        help="Language the source document is written in "
+                             "(overrides DOC_LANGUAGE env var)")
 
 
 def _add_prompt_args(parser: argparse.ArgumentParser) -> None:
@@ -58,6 +61,8 @@ def _apply_overrides(args: argparse.Namespace, settings) -> None:
         settings.top_k = args.top_k
     if getattr(args, "temperature", None) is not None:
         settings.temperature = args.temperature
+    if getattr(args, "doc_language", None) is not None:
+        settings.doc_language = args.doc_language
 
     settings.vs = Chroma(
         client=settings.db_client,

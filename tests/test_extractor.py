@@ -95,6 +95,30 @@ def test_max_retries_stops_loop(mock_llm, mock_tool, settings):
     assert should_retry(state) == "__end__"
 
 
+def test_doc_language_in_extraction_system_message(mock_llm, mock_tool, settings):
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 42}))
+    settings.doc_language = "German"
+    retrieve, extract, validate, should_retry = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    _run_nodes(_initial_state(), retrieve, extract, validate)
+    system_msg = mock_llm.invoke.call_args[0][0][0].content
+    assert system_msg.startswith("Extract data.")
+    assert "German" in system_msg
+    assert "Output ONLY valid JSON" in system_msg
+
+
+def test_no_doc_language_keeps_extraction_message_unchanged(mock_llm, mock_tool, settings):
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 42}))
+    settings.doc_language = ""
+    retrieve, extract, validate, should_retry = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    _run_nodes(_initial_state(), retrieve, extract, validate)
+    system_msg = mock_llm.invoke.call_args[0][0][0].content
+    assert system_msg.startswith("Extract data.\n\nOutput ONLY valid JSON")
+
+
 def test_retry_includes_error_feedback(mock_llm, mock_tool, settings):
     mock_llm.invoke.return_value = _make_response("bad")
     retrieve, extract, validate, should_retry = make_extraction_nodes(

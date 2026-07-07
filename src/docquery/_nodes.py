@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from pydantic import BaseModel
 
-from docquery.config import Settings
+from docquery.config import Settings, language_directive
 from docquery._state import ExtractionState
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,9 @@ def make_extraction_nodes(
     settings: Settings,
 ):
     schema_json = json.dumps(output_model.model_json_schema(), indent=2)
+    directive = language_directive(settings.doc_language)
+    if directive:
+        system_prompt = f"{system_prompt}\n\n{directive}"
 
     @traceable(name="retrieve")
     def retrieve(state: ExtractionState) -> ExtractionState:

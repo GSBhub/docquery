@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable
 
-from docquery.config import Settings
+from docquery.config import Settings, language_directive
 from docquery.embeddings.llm import get_llm
 from docquery._state import ChatState
 from docquery.tools.registry import ToolRegistry
@@ -39,6 +39,9 @@ class ChatAgent:
                  system_prompt: str | None = None):
         self._settings = settings or Settings()
         self._system_prompt = system_prompt or _SYSTEM_PROMPT
+        directive = language_directive(self._settings.doc_language)
+        if directive:
+            self._system_prompt = f"{self._system_prompt}\n\n{directive}"
         self._tools = tool_registry.get_tools()
         llm = get_llm(self._settings)
         self._llm_with_tools = llm.bind_tools(self._tools)

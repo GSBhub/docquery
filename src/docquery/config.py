@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 ENTITY_PREFIX = "entity_"
 
 
+def language_directive(doc_language: str) -> str:
+    """Prompt clause for a non-English source document; "" when unset."""
+    if not doc_language.strip():
+        return ""
+    return (
+        f"The source document is written in {doc_language.strip()}. "
+        "Interpret retrieved passages and search results in that language. "
+        "Respond in the language the user's question is written in, "
+        "unless the user requests a specific language."
+    )
+
+
 @dataclass
 class EntityRule:
     """A structural tagging rule applied to each chunk at ingest time.
@@ -66,6 +78,8 @@ class Settings:
     max_retries: int = field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     top_k: int = field(default_factory=lambda: int(os.getenv("TOP_K", "5")))
     temperature: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0")))
+    # Natural language the source document is written in ("" = unspecified).
+    doc_language: str = field(default_factory=lambda: os.getenv("DOC_LANGUAGE", ""))
     llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "120")))
     llm_num_predict: int = field(default_factory=lambda: int(os.getenv("LLM_NUM_PREDICT", "2048")))
 

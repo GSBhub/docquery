@@ -97,6 +97,7 @@ LLM_API_KEY=sk-ant-...
 | `CHUNK_SIZE` | `2000` | Max characters per chunk (Unstructured `max_characters`) |
 | `CHUNK_OVERLAP` | `200` | Characters carried between chunks; keeps headings split across a boundary intact for entity enumeration |
 | `TOP_K` | `5` | Similarity results returned per search |
+| `DOC_LANGUAGE` | — | Language the source document is written in; informs chat and extraction prompts (also `--doc-language`) |
 | `MAX_RETRIES` | `3` | Max extraction retries on validation error |
 
 ---

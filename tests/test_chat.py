@@ -65,3 +65,29 @@ def test_reset_clears_history(mock_registry, settings):
     agent.chat("Question?")
     agent.reset()
     assert agent._history == []
+
+
+def test_doc_language_appended_to_default_prompt(mock_registry, settings):
+    from docquery._chat import _SYSTEM_PROMPT
+
+    settings.doc_language = "German"
+    agent = _make_agent(mock_registry, settings, [AIMessage(content="ok")])
+    assert agent._system_prompt.startswith(_SYSTEM_PROMPT)
+    assert "German" in agent._system_prompt
+
+
+def test_doc_language_appended_to_custom_prompt(mock_registry, settings):
+    settings.doc_language = "Japanese"
+    with patch("docquery._chat.get_llm") as mock_get_llm:
+        mock_get_llm.return_value = MagicMock()
+        agent = ChatAgent(mock_registry, settings, system_prompt="Custom prompt.")
+    assert agent._system_prompt.startswith("Custom prompt.")
+    assert "Japanese" in agent._system_prompt
+
+
+def test_no_doc_language_leaves_prompt_unchanged(mock_registry, settings):
+    from docquery._chat import _SYSTEM_PROMPT
+
+    settings.doc_language = ""
+    agent = _make_agent(mock_registry, settings, [AIMessage(content="ok")])
+    assert agent._system_prompt == _SYSTEM_PROMPT
