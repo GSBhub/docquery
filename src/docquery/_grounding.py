@@ -116,15 +116,51 @@ def _record_scalars(record: dict) -> list[object]:
     return [v for v in record.values() if _is_verifiable_scalar(v)]
 
 
+_MACHINE_PREFIXES = ("ENCODING ", "TABLE ", "ROW ")
+
+
+def _grounding_units(context: str) -> list[str]:
+    """Line-granularity units for record co-occurrence checks.
+
+    Each non-empty line stands alone, except that machine lines of a structure
+    block (a paragraph containing ENCODING/TABLE/ROW lines) are augmented with
+    the block's heading lines — the text above its first machine line.
+    Documents name a structure once in a heading (mnemonic, register name,
+    table title) and put the values on machine lines below it, so a correctly
+    paired record spans heading + ONE machine line. Two different data lines
+    are never merged into a unit, which keeps swapped associations (NMI with
+    HardFault's address) failing.
+    """
+    units: list[str] = []
+    for block in re.split(r"\n\s*\n", context):
+        lines = [ln for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        first_machine = next(
+            (i for i, ln in enumerate(lines)
+             if ln.strip().startswith(_MACHINE_PREFIXES)),
+            None,
+        )
+        heading = "\n".join(lines[:first_machine]) if first_machine else ""
+        for ln in lines:
+            if heading and ln.strip().startswith(_MACHINE_PREFIXES):
+                units.append(f"{heading}\n{ln}")
+            else:
+                units.append(ln)
+    return units
+
+
 def ungrounded_records(instance: object, context: str, _prefix: str = "") -> list[str]:
-    """Records whose verifiable values never co-occur on one context line.
+    """Records whose verifiable values never co-occur in one grounding unit.
 
     Presence alone cannot catch association errors: pairing NMI with
     HardFault's address passes a presence check because both tokens exist
     somewhere in the context. A record (dict/model with two or more
-    verifiable scalar fields) is grounded only if some single line of the
-    context contains all of its verifiable values — which the machine-
-    parseable ROW/ENCODING lines guarantee for correctly-paired data.
+    verifiable scalar fields) is grounded only if some unit — a context line,
+    or a structure block's headings plus one of its machine lines (see
+    :func:`_grounding_units`) — contains all of its verifiable values, which
+    the machine-parseable ROW/ENCODING lines guarantee for correctly-paired
+    data while still keeping values from two different data lines apart.
     """
     misses: list[str] = []
     if hasattr(instance, "model_dump"):
@@ -132,8 +168,8 @@ def ungrounded_records(instance: object, context: str, _prefix: str = "") -> lis
     if isinstance(instance, dict):
         scalars = _record_scalars(instance)
         if len(scalars) >= 2:
-            lines = [ln for ln in context.splitlines() if ln.strip()]
-            if not any(all(_scalar_in_text(v, ln) for v in scalars) for ln in lines):
+            units = _grounding_units(context)
+            if not any(all(_scalar_in_text(v, u) for v in scalars) for u in units):
                 pairing = ", ".join(repr(v) for v in scalars)
                 misses.append(f"{_prefix.rstrip('.') or 'record'}: ({pairing})")
         for key, value in instance.items():
