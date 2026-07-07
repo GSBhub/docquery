@@ -1,6 +1,29 @@
+import logging
+
 from langchain_core.language_models import BaseChatModel
 
 from docquery.config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+def get_structured_llm(llm: BaseChatModel, schema, settings: Settings):
+    """Bind *schema* to *llm* with the provider's structured-output support.
+
+    For Ollama this selects ``method="json_schema"`` — grammar-constrained
+    decoding, so schema compliance is guaranteed at the token level rather
+    than prompted for. Returns a runnable yielding ``{"raw", "parsed",
+    "parsing_error"}``, or ``None`` when the provider/model cannot bind the
+    schema (callers fall back to prompt-based JSON).
+    """
+    try:
+        if settings.llm_provider == "ollama":
+            return llm.with_structured_output(schema, method="json_schema", include_raw=True)
+        return llm.with_structured_output(schema, include_raw=True)
+    except Exception as exc:  # noqa: BLE001 - fall back to prompt-based JSON
+        logger.warning("Structured output unavailable for provider %r: %s",
+                       settings.llm_provider, exc)
+        return None
 
 
 def get_llm(settings: Settings | None = None) -> BaseChatModel:

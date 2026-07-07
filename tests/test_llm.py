@@ -40,6 +40,36 @@ def test_get_llm_azure():
     assert result.deployment_name == "my-deployment"
 
 
+def test_get_structured_llm_uses_json_schema_for_ollama():
+    from unittest.mock import MagicMock
+    from pydantic import BaseModel
+    from docquery.config import Settings
+    from docquery.embeddings.llm import get_structured_llm
+
+    class M(BaseModel):
+        x: int
+
+    llm = MagicMock()
+    s = Settings(llm_provider="ollama")
+    result = get_structured_llm(llm, M, s)
+    assert result is llm.with_structured_output.return_value
+    llm.with_structured_output.assert_called_once_with(M, method="json_schema", include_raw=True)
+
+
+def test_get_structured_llm_returns_none_when_unsupported():
+    from unittest.mock import MagicMock
+    from pydantic import BaseModel
+    from docquery.config import Settings
+    from docquery.embeddings.llm import get_structured_llm
+
+    class M(BaseModel):
+        x: int
+
+    llm = MagicMock()
+    llm.with_structured_output.side_effect = NotImplementedError
+    assert get_structured_llm(llm, M, Settings(llm_provider="openai")) is None
+
+
 def test_get_llm_azure_without_endpoint_raises(monkeypatch):
     from docquery.config import Settings
     from docquery.embeddings.llm import get_llm

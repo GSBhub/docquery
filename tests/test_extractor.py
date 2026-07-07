@@ -17,6 +17,9 @@ class SimpleModel(BaseModel):
 @pytest.fixture
 def mock_llm():
     llm = MagicMock()
+    # exercise the prompt-based JSON fallback; structured-output tests build
+    # their own llm with a working with_structured_output
+    llm.with_structured_output.side_effect = NotImplementedError("no structured output")
     return llm
 
 
@@ -130,3 +133,87 @@ def test_retry_includes_error_feedback(mock_llm, mock_tool, settings):
     call_args = mock_llm.invoke.call_args_list[-1][0][0]
     human_msg = call_args[1].content
     assert "validation errors" in human_msg.lower() or "error" in human_msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# constrained structured output
+# ---------------------------------------------------------------------------
+
+def test_structured_output_path_bypasses_prompt_json(mock_tool, settings):
+    llm = MagicMock()
+    structured = MagicMock()
+    structured.invoke.return_value = {
+        "parsed": SimpleModel(name="foo", value=42), "raw": None, "parsing_error": None,
+    }
+    llm.with_structured_output.return_value = structured
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] == SimpleModel(name="foo", value=42)
+    llm.invoke.assert_not_called()  # constrained path, no raw JSON prompting
+
+
+def test_structured_invoke_failure_falls_back_to_prompt_json(mock_tool, settings):
+    llm = MagicMock()
+    structured = MagicMock()
+    structured.invoke.side_effect = RuntimeError("server rejected schema")
+    llm.with_structured_output.return_value = structured
+    llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 42}))
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] is not None
+    llm.invoke.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# grounded validation (the retrieved context is the source of truth)
+# ---------------------------------------------------------------------------
+
+def test_strict_grounding_rejects_invented_value(mock_llm, mock_tool, settings):
+    # context says value is 42; the model invents 999
+    settings.grounding = "strict"
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 999}))
+    retrieve, extract, validate, should_retry = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] is None
+    assert state["retry_count"] == 1
+    assert any("not found in the retrieved context" in e for e in state["validation_errors"])
+    assert any("value=999" in e for e in state["validation_errors"])
+    assert should_retry(state) == "extract"
+
+
+def test_warn_grounding_accepts_but_logs(mock_llm, mock_tool, settings, caplog):
+    settings.grounding = "warn"
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 999}))
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    with caplog.at_level("WARNING"):
+        state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] is not None
+    assert any("Ungrounded" in r.message for r in caplog.records)
+
+
+def test_off_grounding_skips_check(mock_llm, mock_tool, settings):
+    settings.grounding = "off"
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 999}))
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] is not None
+
+
+def test_grounded_values_pass_strict(mock_llm, mock_tool, settings):
+    settings.grounding = "strict"
+    mock_llm.invoke.return_value = _make_response(json.dumps({"name": "foo", "value": 42}))
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        mock_llm, mock_tool, SimpleModel, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert state["validated"] == SimpleModel(name="foo", value=42)
