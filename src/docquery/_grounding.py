@@ -24,6 +24,10 @@ import re
 # free text: they are too noisy (list positions, counts, page references) and
 # would flood answers with false mismatches.
 _HEX_RE = re.compile(r"0[xX][0-9a-fA-F_]+")
+# Hex literals typeset with grouped digits ("0xA800 0000", "0x0000 0280"):
+# continuation groups must be exactly 4 hex digits so unrelated adjacent
+# numbers ("0x08 or 15") are never merged into one claim.
+_SPACED_HEX_RE = re.compile(r"0[xX][0-9a-fA-F]{1,4}(?: [0-9a-fA-F]{4})+")
 _BIT_RANGE_RE = re.compile(r"\[?(\d{1,2})\s*[:\-–]\s*(\d{1,2})\]?")
 _MACHINE_LINE_RE = re.compile(r"^\s*(ENCODING \d+-bit:.*|ROW .*|TABLE \S+:.*)$", re.MULTILINE)
 _BINARY_FIELD_RE = re.compile(r"=([01]{2,})\b")
@@ -32,7 +36,14 @@ GROUNDING_MODES = ("strict", "warn", "off")
 
 
 def _norm_hex(token: str) -> str:
-    return f"0x{int(token.replace('_', ''), 16):x}"
+    return f"0x{int(token.replace('_', '').replace(' ', ''), 16):x}"
+
+
+def _hex_claims(text: str) -> set[str]:
+    """Normalized hex values present in *text*, including digit-grouped ones."""
+    claims = {_norm_hex(m.group()) for m in _HEX_RE.finditer(text)}
+    claims.update(_norm_hex(m.group()) for m in _SPACED_HEX_RE.finditer(text))
+    return claims
 
 
 def _norm_range(hi: str, lo: str) -> str:
@@ -50,9 +61,7 @@ def extract_claims(text: str) -> set[str]:
     machine lines (ENCODING/ROW/TABLE) to whitespace-collapsed form, and
     ``=0101``-style binary field values to ``=<bits>``.
     """
-    claims: set[str] = set()
-    for m in _HEX_RE.finditer(text):
-        claims.add(_norm_hex(m.group()))
+    claims: set[str] = _hex_claims(text)
     for m in _BIT_RANGE_RE.finditer(text):
         claims.add(_norm_range(m[1], m[2]))
     for m in _MACHINE_LINE_RE.finditer(text):
@@ -105,9 +114,10 @@ def _scalar_in_text(value: object, text: str) -> bool:
     v = str(value).strip()
     if v.lower() in text.lower():
         return True
-    if m := _HEX_RE.fullmatch(v):
-        # hex spelled differently in the document (0x4 vs 0x00000004)
-        return _norm_hex(v) in {_norm_hex(t.group()) for t in _HEX_RE.finditer(text)}
+    if _HEX_RE.fullmatch(v):
+        # hex spelled differently in the document (0x4 vs 0x00000004,
+        # or digit-grouped: 0xA800 0000)
+        return _norm_hex(v) in _hex_claims(text)
     return False
 
 
@@ -116,11 +126,39 @@ def _record_scalars(record: dict) -> list[object]:
     return [v for v in record.values() if _is_verifiable_scalar(v)]
 
 
+def _model_items(instance: object) -> "dict | None":
+    """A Pydantic model's field values minus grounding-exempt fields, else None.
+
+    A schema opts a field out of grounding enforcement with
+    ``Field(json_schema_extra={"grounding": "off"})`` — for values that are
+    legitimately absent from the document text (derived, reworded, or supplied
+    by the caller) but too identifier-like for the prose exemption to apply.
+    """
+    fields = getattr(type(instance), "model_fields", None)
+    if not hasattr(instance, "model_dump") or fields is None:
+        return None
+    items: dict = {}
+    for name, f in fields.items():
+        extra = getattr(f, "json_schema_extra", None)
+        if isinstance(extra, dict) and extra.get("grounding") == "off":
+            continue
+        items[name] = getattr(instance, name)
+    return items
+
+
 _MACHINE_PREFIXES = ("ENCODING ", "TABLE ", "ROW ")
 
 
+# A block without machine lines only counts as one unit when it is small
+# enough to plausibly describe a single entity (a register section's
+# "heading / Address offset: … / Reset value: …" stanza), not a table
+# flattened into prose where merging would hide swapped associations.
+_MAX_BLOCK_UNIT_LINES = 4
+_MAX_BLOCK_UNIT_CHARS = 400
+
+
 def _grounding_units(context: str) -> list[str]:
-    """Line-granularity units for record co-occurrence checks.
+    """Units for record co-occurrence checks.
 
     Each non-empty line stands alone, except that machine lines of a structure
     block (a paragraph containing ENCODING/TABLE/ROW lines) are augmented with
@@ -130,6 +168,15 @@ def _grounding_units(context: str) -> list[str]:
     paired record spans heading + ONE machine line. Two different data lines
     are never merged into a unit, which keeps swapped associations (NMI with
     HardFault's address) failing.
+
+    Two block-scoped units are added on top of the per-line ones, because
+    reference manuals also state one entity's attributes as a short labeled
+    stanza ("6.3.1 … (GPIOx_CFGR)" / "Address offset: 0x00" / "Reset value:
+    0xA8000000") rather than a table row: a block's heading region (the lines
+    above its first machine line) is one unit, and a small machine-line-free
+    block (≤ ``_MAX_BLOCK_UNIT_LINES`` lines and ``_MAX_BLOCK_UNIT_CHARS``
+    chars) is one unit. Machine/data lines are still never merged with each
+    other, and blocks never merge across blank lines.
     """
     units: list[str] = []
     for block in re.split(r"\n\s*\n", context):
@@ -142,6 +189,11 @@ def _grounding_units(context: str) -> list[str]:
             None,
         )
         heading = "\n".join(lines[:first_machine]) if first_machine else ""
+        if heading:
+            units.append(heading)
+        elif first_machine is None and 1 < len(lines) <= _MAX_BLOCK_UNIT_LINES \
+                and sum(len(ln) for ln in lines) <= _MAX_BLOCK_UNIT_CHARS:
+            units.append("\n".join(lines))
         for ln in lines:
             if heading and ln.strip().startswith(_MACHINE_PREFIXES):
                 units.append(f"{heading}\n{ln}")
@@ -163,8 +215,8 @@ def ungrounded_records(instance: object, context: str, _prefix: str = "") -> lis
     data while still keeping values from two different data lines apart.
     """
     misses: list[str] = []
-    if hasattr(instance, "model_dump"):
-        instance = instance.model_dump()
+    if (items := _model_items(instance)) is not None:
+        instance = items
     if isinstance(instance, dict):
         scalars = _record_scalars(instance)
         if len(scalars) >= 2:
@@ -189,8 +241,8 @@ def ungrounded_fields(instance: object, context: str, _prefix: str = "") -> list
     retrieved context. Empty list means the extraction is grounded.
     """
     misses: list[str] = []
-    if hasattr(instance, "model_dump"):
-        instance = instance.model_dump()
+    if (items := _model_items(instance)) is not None:
+        instance = items
     if isinstance(instance, dict):
         for key, value in instance.items():
             misses.extend(ungrounded_fields(value, context, f"{_prefix}{key}."))

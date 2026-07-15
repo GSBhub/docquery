@@ -1,16 +1,50 @@
 import pytest
 
 
-def test_get_llm_ollama_timeout():
+def test_get_llm_ollama_timeout(monkeypatch):
     from langchain_ollama import ChatOllama
     from docquery.config import Settings
     from docquery.embeddings.llm import get_llm
 
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     s = Settings(llm_provider="ollama", llm_timeout=30, llm_num_predict=512)
     result = get_llm(s)
     assert isinstance(result, ChatOllama)
     assert result.num_predict == 512
     assert result.sync_client_kwargs == {"timeout": 30}
+
+
+def test_get_llm_ollama_bearer_header_from_api_key():
+    from langchain_ollama import ChatOllama
+    from docquery.config import Settings
+    from docquery.embeddings.llm import get_llm
+
+    # Proxied Ollama endpoints (open-webui /ollama passthrough) authenticate
+    # with a bearer token; plain Ollama ignores the header.
+    s = Settings(llm_provider="ollama", llm_timeout=30, llm_api_key="secret")
+    result = get_llm(s)
+    assert isinstance(result, ChatOllama)
+    expected = {"timeout": 30, "headers": {"Authorization": "Bearer secret"}}
+    assert result.sync_client_kwargs == expected
+    assert result.client_kwargs == expected
+
+
+def test_get_embeddings_ollama_bearer_header_from_api_key(monkeypatch):
+    from langchain_ollama import OllamaEmbeddings
+    from docquery.config import Settings
+    from docquery.embeddings.provider import get_embeddings
+
+    s = Settings(embed_provider="ollama", embed_api_key="secret")
+    result = get_embeddings(s)
+    assert isinstance(result, OllamaEmbeddings)
+    assert result.client_kwargs == {"headers": {"Authorization": "Bearer secret"}}
+
+    monkeypatch.delenv("EMBED_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    s = Settings(embed_provider="ollama", embed_api_key="")
+    result = get_embeddings(s)
+    assert result.client_kwargs in (None, {})
 
 
 def test_get_llm_anthropic():

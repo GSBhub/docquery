@@ -43,15 +43,33 @@ logger = logging.getLogger(__name__)
 Word = Sequence[Any]
 
 _MAX_ROW_GAP_FACTOR = 3.0  # stop after a vertical gap > this many row heights
-_MAX_KEY_WORDS = 1         # a data row's key cell is one token ("31:16", "PA0", "5");
-                           # multi-word key cells are how prose sneaks in as rows
 _MAX_STRIKES = 2           # consecutive non-table rows before the table ends
+# A single-row table is real only when the row is dense (a one-register
+# field table); sparse one-row candidates are usually prose misreads.
+_MIN_SINGLE_ROW_FILLED = 4
 
 _TABLE_LINE_RE = re.compile(r"^TABLE (\S+): (.+)$")
 
 # Footnote/list markers ("a.", "12.") that land in the key column and would
 # otherwise pass the single-token key check.
 _MARKER_KEY_RE = re.compile(r"^(?:[a-z]|\d{1,2})\.$")
+
+# A "Bit"/"Bits" label glued to the range in the key cell ("Bit 31:16",
+# "Bit 2y+1:2y") — the one multi-word key shape that is data, not prose.
+_BIT_LABEL_RE = re.compile(r"^bits?$", re.IGNORECASE)
+
+
+def _is_key_cell(text: str) -> bool:
+    """True when *text* is shaped like a data row's key cell.
+
+    One token ("31:16", "PA0", "5") — multi-word key cells are how prose
+    sneaks in as rows — or exactly two tokens whose first is a literal
+    Bit/Bits label.
+    """
+    words = text.split()
+    if len(words) <= 1:
+        return True
+    return len(words) == 2 and bool(_BIT_LABEL_RE.match(words[0]))
 
 
 def _merge_row_cells(row: "list[Word]") -> "list[list[Any]]":
@@ -201,6 +219,7 @@ def tables_from_words(words: "list[Word]", rules: "list[StructureRule]") -> "lis
             (columns[k][1] + columns[k + 1][0]) / 2 for k in range(len(columns) - 1)
         ]
         max_gap = _MAX_ROW_GAP_FACTOR * max(row_height, 8.0)
+        name_key = rule.name_column if rule.name_column in keys else keys[0]
 
         data_rows: list[dict[str, str]] = []
         strikes = 0
@@ -213,12 +232,20 @@ def tables_from_words(words: "list[Word]", rules: "list[StructureRule]") -> "lis
                 break  # next table's header; outer loop will revisit it
             values = _assign_row(rows[ys[j]], boundaries, len(keys))
             filled = [k for k, v in zip(keys, values) if v]
-            if (
-                len(filled) >= 2
-                and values[0]
-                and len(values[0].split()) <= _MAX_KEY_WORDS
+            key_ok = (
+                bool(values[0])
+                and _is_key_cell(values[0])
                 and not _MARKER_KEY_RE.match(values[0])
-            ):
+            )
+            # Merged/spanning key cells (a memory map's "Bus" column) leave
+            # the key empty on continuation rows; rules opt in via
+            # allow_empty_key, gated on the naming cell being present.
+            empty_key_ok = (
+                rule.allow_empty_key
+                and not values[0]
+                and bool(values[keys.index(name_key)])
+            )
+            if len(filled) >= 2 and (key_ok or empty_key_ok):
                 data_rows.append(dict(zip(keys, values)))
                 strikes = 0
                 last_y = ys[j]
@@ -227,15 +254,24 @@ def tables_from_words(words: "list[Word]", rules: "list[StructureRule]") -> "lis
                 prev = data_rows[-1]
                 prev[filled[0]] = f"{prev[filled[0]]} {values[keys.index(filled[0])]}".strip()
                 last_y = ys[j]
+            elif len(filled) == 1 and not data_rows and filled[0] != keys[0]:
+                # Wrapped cell text rendered above the first data row (some
+                # generators emit a row's tall description cell first): skip
+                # without striking, keeping the gap window alive.
+                last_y = ys[j]
             else:
                 strikes += 1
                 if strikes >= _MAX_STRIKES:
                     break
             j += 1
 
-        name_key = rule.name_column if rule.name_column in keys else keys[0]
         named = [r for r in data_rows if r.get(name_key)]
-        if len(data_rows) >= 2 and 2 * len(named) >= len(data_rows):
+        dense_single = (
+            len(data_rows) == 1
+            and named
+            and sum(1 for v in data_rows[0].values() if v) >= _MIN_SINGLE_ROW_FILLED
+        )
+        if (len(data_rows) >= 2 and 2 * len(named) >= len(data_rows)) or dense_single:
             tables.append({
                 "kind": rule.kind,
                 "columns": keys,

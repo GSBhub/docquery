@@ -34,13 +34,18 @@ def get_llm(settings: Settings | None = None) -> BaseChatModel:
 
     if settings.llm_provider == "ollama":
         from langchain_ollama import ChatOllama
+        # Proxied Ollama endpoints (e.g. open-webui's /ollama passthrough)
+        # authenticate with a bearer token that plain Ollama ignores.
+        client_kwargs: dict[str, object] = {"timeout": settings.llm_timeout}
+        if settings.llm_api_key:
+            client_kwargs["headers"] = {"Authorization": f"Bearer {settings.llm_api_key}"}
         return ChatOllama(
             model=settings.llm_model,
             base_url=settings.llm_base_url,
             temperature=temp,
             num_predict=settings.llm_num_predict,
-            sync_client_kwargs={"timeout": settings.llm_timeout},
-            client_kwargs={"timeout": settings.llm_timeout},
+            sync_client_kwargs=dict(client_kwargs),
+            client_kwargs=dict(client_kwargs),
         )
 
     if settings.llm_provider == "anthropic":

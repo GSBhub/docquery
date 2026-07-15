@@ -24,9 +24,16 @@ def get_embeddings(settings: Settings | None = None) -> Embeddings:
 
     if settings.embed_provider == "ollama":
         from langchain_ollama import OllamaEmbeddings
+        # Proxied Ollama endpoints (e.g. open-webui's /ollama passthrough)
+        # authenticate with a bearer token that plain Ollama ignores.
+        ollama_kwargs: dict[str, object] = {}
+        if settings.embed_api_key:
+            headers = {"Authorization": f"Bearer {settings.embed_api_key}"}
+            ollama_kwargs["client_kwargs"] = {"headers": headers}
         return OllamaEmbeddings(
             model=settings.embed_model,
             base_url=settings.embed_base_url,
+            **ollama_kwargs,
         )
 
     if settings.embed_provider == "azure":
