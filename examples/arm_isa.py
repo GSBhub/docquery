@@ -10,12 +10,8 @@ Usage:
 """
 from pydantic import BaseModel
 
+import docquery
 from docquery.config import Settings
-from docquery.embeddings.provider import get_embeddings
-from docquery.pipeline.chat import ChatAgent
-from docquery.pipeline.extractor import ExtractionPipeline
-from docquery.storage.vector_store import VectorStore
-from docquery.tools.registry import ToolRegistry
 
 
 class Operand(BaseModel):
@@ -38,25 +34,25 @@ Return ONLY valid JSON matching the provided schema. No markdown, no explanation
 DB_PATH = "arm_manual.db"
 
 
+def _settings() -> Settings:
+    settings = Settings()
+    settings.db_path = DB_PATH
+    return settings
+
+
 def run_extraction():
-    pipeline = ExtractionPipeline(
-        db_path=DB_PATH,
-        output_model=ISAInstruction,
+    result = docquery.query(
+        "Extract the LDR instruction: encoding, operands, and flags affected",
+        schema=ISAInstruction,
         system_prompt=SYSTEM_PROMPT,
+        settings=_settings(),
     )
-    result = pipeline.run("Extract the LDR instruction: encoding, operands, and flags affected")
     print("=== Structured Extraction ===")
     print(result.model_dump_json(indent=2))
 
 
 def run_chat():
-    settings = Settings()
-    settings.db_path = DB_PATH
-    embeddings = get_embeddings(settings)
-    sample = embeddings.embed_query("probe")
-    vs = VectorStore(DB_PATH, embedding_dim=len(sample))
-    registry = ToolRegistry(vs, embeddings, settings)
-    agent = ChatAgent(registry, settings)
+    session = docquery.chat_session(settings=_settings())
 
     print("\n=== RAG Chat ===")
     questions = [
@@ -66,9 +62,7 @@ def run_chat():
     ]
     for q in questions:
         print(f"Q: {q}")
-        print(f"A: {agent.chat(q)}\n")
-
-    vs.close()
+        print(f"A: {session.chat(q)}\n")
 
 
 if __name__ == "__main__":

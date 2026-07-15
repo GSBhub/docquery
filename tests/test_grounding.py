@@ -232,3 +232,139 @@ def test_heading_augmentation_does_not_merge_two_data_lines():
     ctx = ("Exception model\nStructured interrupt table:\n" + ROWS)
     v = Vector(name="NMI", address="0x0C")  # HardFault's address
     assert ungrounded_records(v, ctx)  # still flagged with headings present
+
+
+# ---------------------------------------------------------------------------
+# digit-grouped hex ("0xA800 0000")
+# ---------------------------------------------------------------------------
+
+def test_extract_spaced_hex_merges_four_digit_groups():
+    claims = extract_claims("Reset value: 0x0000 0280 for port B")
+    assert "0x280" in claims
+    claims = extract_claims("0xA800 0000 for port A")
+    assert "0xa8000000" in claims
+
+
+def test_spaced_hex_does_not_merge_unrelated_numbers():
+    # continuation groups must be exactly 4 hex digits
+    assert "0x815" not in extract_claims("registers 0x08 15 in the map")
+    assert "0x80c" not in extract_claims("0x08 or 0x0C")
+
+
+def test_field_grounds_against_spaced_hex_in_document():
+    class M(BaseModel):
+        reset_value: str
+    ctx = "Reset value: 0x0000 0280 for port B, and 0x00000000 for other ports."
+    assert ungrounded_fields(M(reset_value="0x00000280"), ctx) == []
+
+
+def test_record_grounds_on_row_with_spaced_hex():
+    from docquery._grounding import ungrounded_records
+
+    class RegRow(BaseModel):
+        name: str
+        offset: str
+        reset_value: str
+
+    ctx = ("GPIO register map\n"
+           "TABLE register_map: register | offset | reset_value\n"
+           "ROW GPIOA_CFGR | 0x00 | 0xA800 0000\n"
+           "ROW GPIOA_OMODE | 0x04 | 0x0000 00C0")
+    r = RegRow(name="GPIOA_CFGR", offset="0x00", reset_value="0xA8000000")
+    assert ungrounded_records(r, ctx) == []
+    # reset value taken from the OTHER row is still a wrong association
+    r = RegRow(name="GPIOA_CFGR", offset="0x00", reset_value="0x000000C0")
+    assert ungrounded_records(r, ctx)
+
+
+# ---------------------------------------------------------------------------
+# block-scoped grounding units (register stanzas)
+# ---------------------------------------------------------------------------
+
+class RegStanza(BaseModel):
+    name: str
+    offset: str
+    reset_value: str
+
+
+AT32_STANZA = """6.3.1 GPIO configuration register (GPIOx_CFGR) (x=A..F)
+Address offset: 0x00
+Reset value: 0xA800 0000 for port A, 0x0000 0280 for port B."""
+
+
+def test_small_block_without_machine_lines_is_one_unit():
+    from docquery._grounding import ungrounded_records
+
+    r = RegStanza(name="GPIOx_CFGR", offset="0x00", reset_value="0xA8000000")
+    assert ungrounded_records(r, AT32_STANZA) == []
+
+
+def test_two_register_stanzas_do_not_cross_pair():
+    from docquery._grounding import ungrounded_records
+
+    ctx = (AT32_STANZA + "\n\n"
+           "6.3.2 GPIO output mode register (GPIOx_OMODE)\n"
+           "Address offset: 0x04\n"
+           "Reset value: 0x0001 0000")
+    # offset from stanza 2 paired with stanza 1's register: flagged
+    r = RegStanza(name="GPIOx_CFGR", offset="0x04", reset_value="0xA8000000")
+    assert ungrounded_records(r, ctx)
+
+
+def test_large_block_is_not_one_unit():
+    from docquery._grounding import ungrounded_records
+
+    ctx = ("GPIOx_CFGR overview\n" + "filler line about behaviour\n" * 4 +
+           "Address offset: 0x00\nReset value: 0xA800 0000")
+    r = RegStanza(name="GPIOx_CFGR", offset="0x00", reset_value="0xA8000000")
+    assert ungrounded_records(r, ctx)
+
+
+def test_heading_region_of_structure_block_is_one_unit():
+    from docquery._grounding import ungrounded_records
+
+    ctx = (AT32_STANZA + "\n"
+           "TABLE register_fields: bit | field | description\n"
+           "ROW 15:0 | IOMC | mode configuration")
+    r = RegStanza(name="GPIOx_CFGR", offset="0x00", reset_value="0xA8000000")
+    assert ungrounded_records(r, ctx) == []
+
+
+# ---------------------------------------------------------------------------
+# per-field grounding opt-out (json_schema_extra={"grounding": "off"})
+# ---------------------------------------------------------------------------
+
+def test_exempt_field_is_not_presence_checked():
+    from pydantic import Field as PField
+
+    class M(BaseModel):
+        name: str
+        access: str = PField(json_schema_extra={"grounding": "off"})
+
+    assert ungrounded_fields(M(name="NMI", access="read-write"), ROWS) == []
+
+
+def test_exempt_field_is_not_association_checked():
+    from docquery._grounding import ungrounded_records
+    from pydantic import Field as PField
+
+    class M(BaseModel):
+        name: str
+        address: str
+        access: str = PField(json_schema_extra={"grounding": "off"})
+
+    # {NMI, 0x08} co-occur on a ROW; "rw" appears nowhere but is exempt
+    m = M(name="NMI", address="0x08", access="rw")
+    assert ungrounded_records(m, ROWS) == []
+    assert ungrounded_fields(m, ROWS) == []
+
+
+def test_non_exempt_fields_still_enforced_alongside_exempt():
+    from pydantic import Field as PField
+
+    class M(BaseModel):
+        name: str
+        access: str = PField(json_schema_extra={"grounding": "off"})
+
+    misses = ungrounded_fields(M(name="INVENTED", access="rw"), ROWS)
+    assert misses == ["name='INVENTED'"]

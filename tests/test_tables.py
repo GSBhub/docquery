@@ -67,6 +67,57 @@ def test_pin_map_table():
     assert t["names"] == ["PA0", "PA1"]
 
 
+def test_register_map_table():
+    # S3C2440-style register overview: name, address, and reset value on one
+    # row — the co-occurrence unit record-level grounding needs.
+    words = _row(["Register", "Address", "R/W", "Description", "Reset", "Value"],
+                 y=50, xs=[100, 200, 300, 400, 500, 540])
+    words += _row(["GPACON", "0x56000000", "R/W", "Configures", "0xffffff"],
+                  y=62, xs=[100, 200, 300, 400, 500])
+    words += _row(["GPADAT", "0x56000004", "R/W", "Data", "Undef."],
+                  y=74, xs=[100, 200, 300, 400, 500])
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "register_map"
+    assert t["columns"][:2] == ["register", "address"]
+    assert t["names"] == ["GPACON", "GPADAT"]
+    assert t["rows"][0]["register"] == "GPACON"
+    assert t["rows"][0]["address"] == "0x56000000"
+
+
+def test_at32_offset_register_map_table():
+    words = _row(["Register", "Offset", "Reset value"], y=50, xs=[100, 250, 350])
+    words += _row(["GPIOA_CFGR", "0x00", "0xA8000000"], y=62, xs=[100, 250, 350])
+    words += _row(["GPIOA_OMODE", "0x04", "0x00000000"], y=74, xs=[100, 250, 350])
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "register_map"
+    assert t["columns"][:2] == ["register", "address"]
+    assert t["names"] == ["GPIOA_CFGR", "GPIOA_OMODE"]
+
+
+def test_bit_register_header_is_still_a_field_table():
+    # AT32 field tables title the field-name column "Register"; the bit
+    # column makes them field tables, and register_fields must win.
+    words = _row(["Bit", "Register", "Reset value", "Type"],
+                 y=50, xs=[100, 200, 320, 420])
+    words += _row(["31:16", "Reserved", "0x0000", "resd"],
+                  y=62, xs=[100, 200, 320, 420])
+    words += _row(["15:0", "OM", "0x0000", "rw"],
+                  y=74, xs=[100, 200, 320, 420])
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "register_fields"
+    assert t["names"] == ["Reserved", "OM"]
+
+
+def test_interrupt_table_still_wins_over_map_rules():
+    # A header matching both interrupt_table and register_map synonyms must
+    # keep classifying as interrupt_table (rule order).
+    words = _row(["Vector", "Name", "Address"], y=50, xs=[100, 220, 340])
+    words += _row(["2", "NMI", "0x08"], y=62, xs=[100, 220, 340])
+    words += _row(["3", "HardFault", "0x0C"], y=74, xs=[100, 220, 340])
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "interrupt_table"
+
+
 def test_custom_rule_detects_novel_kind():
     rule = StructureRule(
         kind="dma_channels",
@@ -178,6 +229,70 @@ def test_long_first_cell_rows_are_not_data_rows():
         for i, t in enumerate(["This", "table", "is", "described", "in", "prose"]):
             words.append(_word(90 + i * 40, y, t))
     assert tables_from_words(words, RULES) == []
+
+
+def test_bit_prefixed_key_cells_are_data_rows():
+    # AT32-style field tables label every key cell: "Bit 31:16", "Bit 2y+1:2y".
+    words = _row(["Bit", "Register", "Reset value", "Type"],
+                 y=50, xs=[100, 220, 340, 440])
+    words += [_word(95, 62, "Bit"), _word(130, 62, "31:16"),
+              _word(220, 62, "Reserved"), _word(340, 62, "0x0000"),
+              _word(440, 62, "resd")]
+    words += [_word(95, 74, "Bit"), _word(130, 74, "2y+1:2y"),
+              _word(220, 74, "IOMCy"), _word(340, 74, "0xA800"),
+              _word(440, 74, "rw")]
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "register_fields"
+    assert t["rows"][0]["bit"] == "Bit 31:16"
+    assert t["names"] == ["Reserved", "IOMCy"]
+
+
+def test_leading_wrapped_cell_lines_do_not_kill_table():
+    # Wrapped description text rendered ABOVE the first data row (single
+    # filled non-key column) must not strike the table out.
+    words = _row(["Bits", "Field", "Description"], y=50)
+    words += [_word(300, 62, "configuration")]
+    words += [_word(300, 74, "of the port")]
+    words += _row(["7:0", "EN", "Enable"], y=86)
+    words += _row(["15:8", "RES0", "Reserved"], y=98)
+    (t,) = tables_from_words(words, RULES)
+    assert t["names"] == ["EN", "RES0"]
+
+
+def test_dense_single_row_table_is_accepted():
+    # One-row field tables exist (single-field registers); accept them only
+    # when the row is dense (>= 4 filled columns).
+    words = _row(["Bit", "Field", "Reset value", "Type", "Description"],
+                 y=50, xs=[100, 200, 300, 400, 500])
+    words += _row(["15:0", "OM", "0x0000", "rw", "Output"],
+                  y=62, xs=[100, 200, 300, 400, 500])
+    (t,) = tables_from_words(words, RULES)
+    assert t["kind"] == "register_fields"
+    assert t["names"] == ["OM"]
+
+
+def test_empty_key_rows_need_allow_empty_key():
+    # Memory maps span the bus cell across rows; only rules that opt in via
+    # allow_empty_key accept rows whose key cell is empty.
+    def map_words():
+        words = _row(["Bus", "Boundary address", "Peripherals"],
+                     y=50, xs=[100, 220, 400])
+        words += [_word(100, 62, "APB1"), _word(220, 62, "0x40000000"),
+                  _word(400, 62, "TMR2")]
+        # continuation rows: bus cell empty
+        words += [_word(220, 74, "0x40000400"), _word(400, 74, "TMR3")]
+        words += [_word(220, 86, "0x40000800"), _word(400, 86, "TMR4")]
+        return words
+
+    (t,) = tables_from_words(map_words(), RULES)
+    assert t["kind"] == "memory_map"
+    assert t["names"] == ["TMR2", "TMR3", "TMR4"]
+
+    strict = StructureRule(kind="memory_map",
+                           headers=[["peripheral"], ["address", "boundary"]],
+                           name_column="peripheral")
+    # without opt-in the continuation rows strike the candidate out
+    assert tables_from_words(map_words(), [strict]) == []
 
 
 # ---------------------------------------------------------------------------

@@ -117,6 +117,7 @@ def _parse_structure_rules(specs: list[str] | None):
                 headers=[list(g) for g in data["headers"]],
                 name_column=data.get("name_column"),
                 entity_type=data.get("entity_type"),
+                allow_empty_key=bool(data.get("allow_empty_key", False)),
             ))
         else:
             print(f"Error: --structure {kind}: JSON must be a list of header "

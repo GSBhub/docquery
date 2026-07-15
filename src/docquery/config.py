@@ -70,12 +70,18 @@ class StructureRule:
     name the table's instances; when set, matched documents are tagged
     ``entity_<entity_type>`` at ingest so cursor_enumerate can walk the rows.
     ``entity_type`` defaults to ``kind``.
+
+    ``allow_empty_key`` accepts data rows whose first (key) column is empty as
+    long as the ``name_column`` cell is filled — for tables whose key column
+    is a merged/spanning cell that only the first row of a group carries
+    (e.g. a memory map's "Bus" column).
     """
 
     kind: str
     headers: list[list[str]]
     name_column: str | None = None
     entity_type: str | None = None
+    allow_empty_key: bool = False
 
 
 # Shipped defaults — generic hardware/ISA table vocabulary, not tied to any
@@ -84,8 +90,12 @@ class StructureRule:
 _DEFAULT_STRUCTURE_RULES = [
     StructureRule(
         kind="register_fields",
+        # "register" belongs in the name group: some manuals title the
+        # field-name column "Register" (a bit/bits column alongside it makes
+        # the table a field table, not a register map).
         headers=[["bit", "bits"],
-                 ["field", "name", "symbol", "function", "meaning", "description"]],
+                 ["field", "name", "symbol", "register", "function", "meaning",
+                  "description"]],
         name_column="field",
         entity_type="register_field",
     ),
@@ -102,6 +112,29 @@ _DEFAULT_STRUCTURE_RULES = [
                  ["function", "signal", "alternate", "af", "name", "description"]],
         name_column="pin",
         entity_type="pin",
+    ),
+    # Register overview tables ("Register | Address | R/W | Description |
+    # Reset Value", "Register | Offset | Reset value"): the one place a
+    # register's name, address/offset, and reset value share a row — the
+    # grounding unit record-level checks need. Ordered after the more
+    # specific rules above (first header match wins).
+    StructureRule(
+        kind="register_map",
+        headers=[["register", "symbol"],
+                 ["address", "offset"]],
+        name_column="register",
+        entity_type="register",
+    ),
+    # Peripheral memory maps ("Bus | Boundary address | Peripherals"): name
+    # peripherals with their base-address ranges. Key columns are often
+    # merged cells, hence allow_empty_key.
+    StructureRule(
+        kind="memory_map",
+        headers=[["peripheral", "module", "block"],
+                 ["address", "boundary", "base"]],
+        name_column="peripheral",
+        entity_type="peripheral",
+        allow_empty_key=True,
     ),
 ]
 
@@ -122,6 +155,7 @@ def _load_structure_rules_from_env() -> list[StructureRule]:
                     headers=[list(g) for g in r["headers"]],
                     name_column=r.get("name_column"),
                     entity_type=r.get("entity_type"),
+                    allow_empty_key=bool(r.get("allow_empty_key", False)),
                 )
                 rules[rule.kind] = rule
         except (ValueError, KeyError, TypeError) as exc:

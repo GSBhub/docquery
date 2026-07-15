@@ -142,7 +142,29 @@ def test_azure_key_not_used_for_non_azure_provider(monkeypatch):
 def test_default_structure_rules_shipped(monkeypatch):
     monkeypatch.delenv("STRUCTURE_RULES", raising=False)
     kinds = {r.kind for r in Settings().structure_rules}
-    assert {"register_fields", "interrupt_table", "pin_map"} <= kinds
+    assert {"register_fields", "interrupt_table", "pin_map",
+            "register_map", "memory_map"} <= kinds
+
+
+def test_specific_rules_precede_map_rules(monkeypatch):
+    # _match_header takes the first matching rule, so the broader map rules
+    # must come after register_fields/interrupt_table/pin_map.
+    monkeypatch.delenv("STRUCTURE_RULES", raising=False)
+    kinds = [r.kind for r in Settings().structure_rules]
+    assert kinds.index("register_map") > kinds.index("register_fields")
+    assert kinds.index("memory_map") > kinds.index("interrupt_table")
+
+
+def test_structure_rules_env_parses_allow_empty_key(monkeypatch):
+    monkeypatch.setenv(
+        "STRUCTURE_RULES",
+        '[{"kind": "bus_map", "headers": [["bus"], ["peripheral"]],'
+        ' "name_column": "peripheral", "allow_empty_key": true}]',
+    )
+    rules = {r.kind: r for r in Settings().structure_rules}
+    assert rules["bus_map"].allow_empty_key is True
+    assert rules["memory_map"].allow_empty_key is True   # shipped default
+    assert rules["register_map"].allow_empty_key is False
 
 
 def test_structure_rules_env_appends_new_kind(monkeypatch):
