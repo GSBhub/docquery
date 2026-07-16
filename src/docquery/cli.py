@@ -169,7 +169,7 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     if "." not in args.schema:
         print(
-            f"Error: --schema must be a dotted Python class path, e.g. examples.arm_isa.ISAInstruction\n"
+            f"Error: --schema must be a dotted Python class path, e.g. examples.arm_isa.InstructionSet\n"
             f"Got: {args.schema!r}\n\n"
             f"To ask a free-form question without a schema, omit --schema entirely:\n"
             f"  docquery query \"your question\" --db {settings.db_path}"
@@ -287,7 +287,7 @@ def main() -> None:
         default=None,
         metavar="MODULE.ClassName",
         help="Dotted path to a Pydantic model class for structured extraction, "
-             "e.g. examples.arm_isa.ISAInstruction. Omit for a free-form RAG answer.",
+             "e.g. examples.arm_isa.InstructionSet. Omit for a free-form RAG answer.",
     )
     _add_prompt_args(p_query)
     _add_common_args(p_query)

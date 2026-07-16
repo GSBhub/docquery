@@ -6,7 +6,8 @@ from langchain_core.tools import BaseTool, tool
 
 from langchain_chroma.vectorstores import Chroma
 
-from docquery.config import ENTITY_PREFIX, Settings
+from docquery.config import Settings
+from docquery._enumerate import available_entity_types, enumerate_entities
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +49,6 @@ def _page_sort_key(item: dict) -> tuple[int, int, int]:
         return (1, 0, order)
 
 
-def _section_sort_key(item: dict) -> tuple[int, int, int, int]:
-    """Sort by section order, then page, then retrieval order.
-
-    Items without a section_order sort before sectioned ones (front matter),
-    preserving page order. On a store with no sections at all this is byte-for-
-    byte equivalent to the previous page-only ordering.
-    """
-    so = item.get("section_order")
-    try:
-        section = int(so)
-    except (TypeError, ValueError):
-        section = -1
-    return (section, *_page_sort_key(item))
-
-
 def _format_item(state: CursorState) -> str:
     item = state.items[state.pos]
     name = item.get("entity_name")
@@ -80,8 +66,8 @@ def make_cursor_tools(vector_store: Chroma, settings: Settings | None = None) ->
     Two ways to populate the cursor, both walked by cursor_current / cursor_next:
     - cursor_count(criteria): fuzzy — the chunks most *relevant* to a query.
     - cursor_enumerate(entity_type): structural — *every* chunk tagged with that
-      entity type at ingest (instructions, registers, …). Deterministic and
-      complete, the right tool for "walk every X in the manual".
+      entity type at ingest. Deterministic and complete, the right tool for
+      "walk every item of a given type in the document".
     """
     if settings is None:
         settings = Settings()
@@ -95,7 +81,7 @@ def make_cursor_tools(vector_store: Chroma, settings: Settings | None = None) ->
 Scores all chunks against the criteria, freezes the matching ones into an ordered \
 list, and returns how many there are. Then call cursor_current / cursor_next to walk \
 the list one chunk at a time. Calling this again starts a fresh iteration. \
-Use for tasks like "list every instruction" or "find all error codes"."""
+Use for open-ended tasks like "find every mention of X" or "list all items matching a description"."""
         try:
             count = vector_store._collection.count()  # type: ignore[attr-defined]
         except Exception:
@@ -146,64 +132,35 @@ Use for tasks like "list every instruction" or "find all error codes"."""
     @tool
     def cursor_enumerate(entity_type: str, section: str | None = None,
                          kind: str | None = None) -> str:
-        """Enumerate EVERY tagged entity of a given type (e.g. "instruction", "register", \
-"interrupt", "pin") across the whole document — deterministic and complete, unlike fuzzy \
-cursor_count. Requires the document to have been ingested with entity rules (or structure \
-rules that name table rows). Freezes one item per distinct entity, ordered by document \
-section then page; then call cursor_current / cursor_next to iterate. Pass an optional \
-section title (or path fragment) to scope enumeration to that section, and/or a kind \
-(e.g. "encoding_grid") to walk only entities carried by that structured-region kind. \
-Calling this with an unknown type lists the available types."""
+        """Enumerate EVERY tagged entity of a given type across the whole document \
+— deterministic and complete, unlike fuzzy cursor_count. The available types come from \
+the entity/structure rules the document was ingested with; call this with an unknown \
+type to list them. Freezes one item per distinct entity, ordered by document section \
+then page; then call cursor_current / cursor_next to iterate. Pass an optional section \
+title (or path fragment) to scope enumeration to that section, and/or a structured-region \
+kind to walk only entities carried by that kind."""
         try:
-            collection = vector_store._collection  # type: ignore[attr-defined]
+            _ = vector_store._collection  # type: ignore[attr-defined]
         except Exception:
             logger.error("cursor_enumerate: underlying ChromaDB collection not available")
             return "Cursor unavailable: the document store could not be accessed."
 
-        key = f"{ENTITY_PREFIX}{entity_type}"
-        raw = collection.get(include=["documents", "metadatas"])
-        docs = raw.get("documents") or []
-        metas = raw.get("metadatas") or []
-        ids = raw.get("ids") or []
-
-        # one item per DISTINCT entity name (a chunk may list several, ";"-joined)
-        items: list[dict] = []
-        seen: set[str] = set()
-        for cid, content, meta in zip(ids, docs, metas, strict=False):
-            meta = meta or {}
-            val = meta.get(key)
-            if not val:
-                continue
-            if kind is not None and meta.get("kind") != kind:
-                continue
-            if section is not None:
-                sec = str(meta.get("section") or "")
-                path = str(meta.get("section_path") or "")
-                if section != sec and section not in path:
-                    continue
-            for ename in str(val).split(";"):
-                ename = ename.strip()
-                if not ename or ename in seen:
-                    continue
-                seen.add(ename)
-                items.append({
-                    "id": cid,
-                    "content": content,
-                    "source": meta.get("source"),
-                    "page": meta.get("page"),
-                    "section": meta.get("section"),
-                    "section_order": meta.get("section_order"),
-                    "entity_name": ename,
-                    "_order": len(items),
-                })
+        found = enumerate_entities(vector_store, entity_type, section=section, kind=kind)
+        items = [{
+            "content": it.content,
+            "source": it.source,
+            "page": it.page,
+            "section": it.section,
+            "section_order": it.section_order,
+            "entity_name": it.name,
+        } for it in found]
 
         if not items:
             if section is not None or kind is not None:
                 scope = f" in section {section!r}" if section is not None else ""
                 scope += f" with kind {kind!r}" if kind is not None else ""
                 return f"No {entity_type} entities found{scope}."
-            types = sorted({k[len(ENTITY_PREFIX):] for m in metas if m
-                            for k in m if k.startswith(ENTITY_PREFIX)})
+            types = available_entity_types(vector_store)
             if types:
                 return (f"No entities of type {entity_type!r}. "
                         f"Available types: {', '.join(types)}.")
@@ -211,9 +168,6 @@ Calling this with an unknown type lists the available types."""
                     "rules (Settings.entity_rules or the --entity CLI flag) to enable "
                     "cursor_enumerate.")
 
-        items.sort(key=_section_sort_key)
-        for it in items:
-            it.pop("_order", None)
         scope = f"{entity_type} entities in {section!r}" if section else f"{entity_type} entities"
         state.reset(scope, items)
         logger.info("cursor_enumerate: type=%r, section=%r, distinct entities=%d",
