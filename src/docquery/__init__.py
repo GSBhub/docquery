@@ -41,12 +41,17 @@ def query(
     schema: type[BaseModel] | None = None,
     system_prompt: str | None = None,
     doc_language: str | None = None,
+    derivations: dict | None = None,
     settings: Settings | None = None,
 ) -> str | BaseModel:
     """One-shot RAG query against the vector store.
 
     Without schema: returns a plain str answer via the chat agent.
-    With schema: returns a validated Pydantic model instance via the extraction pipeline.
+    With schema: returns a validated Pydantic model instance. When the schema
+    declares an enumerable list field (``Field(json_schema_extra={"enumerate":
+    ...})``), extraction is driven by grounded entity enumeration — the item
+    list comes from the document's structural tags, not the LLM. Otherwise it
+    runs the single-shot extraction pipeline.
 
     Args:
         prompt: The question or extraction instruction.
@@ -54,6 +59,8 @@ def query(
         system_prompt: Override the default system prompt.
         doc_language: Language the source document is written in (overrides
             the DOC_LANGUAGE env var / ``settings.doc_language``).
+        derivations: Named grouping strategies for enumerable levels the
+            document does not tag directly (see docquery._structured).
         settings: Optional Settings instance. If None, constructed from env vars.
 
     Returns:
@@ -66,6 +73,10 @@ def query(
     _build_chroma(s)
 
     if schema is not None:
+        from docquery._structured import extract_structured, has_enumerable
+        if has_enumerable(schema):
+            return extract_structured(schema, s, prompt,
+                                      system_prompt=system_prompt, derivations=derivations)
         from docquery._extractor import ExtractionPipeline
         pipeline = ExtractionPipeline(
             output_model=schema,

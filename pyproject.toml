@@ -50,4 +50,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# project root on the path so tests can import the examples/ drivers
+pythonpath = ["."]
 
