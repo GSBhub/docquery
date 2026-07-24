@@ -49,6 +49,41 @@ def test_16bit_grid_with_fixed_run_and_fields():
     assert lines == ["ENCODING 16-bit: bits[15:9]=0001100 Rm[8:6] Rn[5:3] Rd[2:0]"]
 
 
+def _col(b):  # x-centre of bit b (bit 7 at x=100, 20pt bit-proportional columns)
+    return 100 + (7 - b) * 20
+
+
+def _c6x_style_words():
+    """8-bit diagram A[7:5] op[4:2] 1[1] p[0] with an explicit width row."""
+    words = [_word(_col(b), 100, str(b)) for b in (7, 5, 4, 2, 1, 0)]  # field-edge bits
+    words += [_word(_col(6), 112, "A"), _word(_col(3), 112, "op"),
+              _word(_col(1), 112, "1"), _word(_col(0), 112, "p")]       # value row
+    words += [_word(_col(6), 126, "3"), _word(_col(3), 126, "3"),
+              _word(_col(0), 126, "1")]                                 # width row
+    return words
+
+
+def test_explicit_width_row_gives_exact_boundaries():
+    # The width row pins boundaries exactly (no x-interpolation drift).
+    encs = encodings_from_words(_c6x_style_words())
+    assert render_encoding_lines(encs) == [
+        "ENCODING 8-bit: A[7:5] op[4:2] bits[1:1]=1 p[0:0]"
+    ]
+
+
+def test_opfield_table_expands_variable_op_field():
+    # A shared diagram with a variable `op` field plus an Opfield opcode-map
+    # column yields one encoding per opcode value.
+    words = _c6x_style_words()
+    words += [_word(300, 150, "Opfield"),
+              _word(300, 162, "011"), _word(300, 174, "101")]
+    lines = render_encoding_lines(encodings_from_words(words))
+    assert lines == [
+        "ENCODING 8-bit: A[7:5] bits[4:2]=011 bits[1:1]=1 p[0:0]",
+        "ENCODING 8-bit: A[7:5] bits[4:2]=101 bits[1:1]=1 p[0:0]",
+    ]
+
+
 def test_should_be_zero_notation_counts_as_fixed():
     words = _header(list(range(7, -1, -1)), y=50)
     words += _cells(["(0)", "1", "(1)", "0"], y=60)
