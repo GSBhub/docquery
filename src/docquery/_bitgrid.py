@@ -40,6 +40,8 @@ _FIXED_TOKENS = {"0": "0", "(0)": "0", "1": "1", "(1)": "1"}
 _MAX_BIT = 63          # highest bit number recognised in a header row
 _MIN_HEADER_RUN = 6    # a header row needs at least this many bit numbers
 _VALUE_ROW_GAP = 16.0  # max pts below a header row to look for the value row
+_WIDTH_ROW_GAP = 26.0  # max pts below the value row to look for a field-width row
+_WIDTH_MATCH_TOL = 16.0  # max pts between a field label and its width number
 
 _ENCODING_LINE_RE = re.compile(r"^ENCODING (\d+)-bit: ", re.MULTILINE)
 
@@ -176,8 +178,149 @@ def _decode_value_row(
     return segments
 
 
+def _width_row_words(
+    value_y: int, ys: "list[int]", rows: "dict[int, list[Word]]",
+    x_lo: float, x_hi: float, header_ys: "set[int]",
+) -> "list[Word]":
+    """The explicit field-width row below the value row, or ``[]``.
+
+    TI/DSP manuals print a row of field widths (``3 1 5 5 5 1 7 …``) under the
+    value row, each number centred on its field. Returns those integer words
+    when the nearest row below the value row is mostly small integers.
+    """
+    cands = [wy for wy in ys if value_y < wy <= value_y + _WIDTH_ROW_GAP and wy not in header_ys]
+    if not cands:
+        return []
+    words = [
+        w for w in rows[cands[0]]
+        if x_lo <= (float(w[0]) + float(w[2])) / 2 <= x_hi
+    ]
+    ints = [w for w in words if str(w[4]).strip().isdigit()]
+    if len(ints) >= 2 and len(ints) >= 0.6 * len(words):
+        return ints
+    return []
+
+
+def _decode_with_widths(
+    max_bit: int, value_row: "list[Word]", width_row: "list[Word]",
+) -> "list[dict[str, Any]] | None":
+    """Assign field boundaries from an explicit width row (TI/DSP style).
+
+    Value-row tokens are walked MSB→LSB; each named field takes its width from
+    the nearest width-row integer, fixed ``0``/``1`` tokens are width 1. This is
+    exact — no x-interpolation guesswork — but only used when the widths tile
+    ``[max_bit:0]`` precisely; otherwise the caller falls back to x-snapping.
+    """
+    widths = [
+        ((float(w[0]) + float(w[2])) / 2, int(str(w[4]).strip()))
+        for w in width_row
+        if str(w[4]).strip().isdigit() and 1 <= int(str(w[4]).strip()) <= max_bit + 1
+    ]
+    if len(widths) < 2:
+        return None
+
+    toks = [
+        ((float(w[0]) + float(w[2])) / 2, str(w[4]).strip())
+        for w in value_row if str(w[4]).strip()
+    ]
+    toks.sort(key=lambda t: t[0])
+
+    seq: list[tuple[str | None, str | None, int]] = []  # (name, value, width)
+    for xc, text in toks:
+        if text in _FIXED_TOKENS:
+            seq.append((None, _FIXED_TOKENS[text], 1))
+            continue
+        near = min(widths, key=lambda wv: abs(wv[0] - xc))
+        if abs(near[0] - xc) > _WIDTH_MATCH_TOL:
+            return None  # a named field with no width number → can't be exact
+        seq.append((text, None, near[1]))
+
+    if sum(w for _, _, w in seq) != max_bit + 1:
+        return None
+
+    segments: list[dict[str, Any]] = []
+    hi = max_bit
+    for name, value, w in seq:
+        lo = hi - w + 1
+        if value is not None and segments and segments[-1].get("value") is not None:
+            segments[-1]["value"] += value  # merge an adjacent fixed-bit run
+            segments[-1]["lo"] = lo
+        else:
+            segments.append({"name": name, "hi": hi, "lo": lo, "value": value})
+        hi = lo - 1
+    return segments
+
+
 def _shift_segments(segments: "list[dict[str, Any]]", by: int) -> "list[dict[str, Any]]":
     return [{**s, "hi": s["hi"] + by, "lo": s["lo"] + by} for s in segments]
+
+
+def _opfield_values(words: "list[Word]") -> "list[str]":
+    """Binary values from a TI ``Opfield`` opcode-map column, or ``[]``.
+
+    C6x instructions share one unit diagram whose ``op`` field is a *variable*;
+    the actual opcode value per operand-type is listed in the ``Opfield`` column
+    of the "Opcode map field used…" table below the diagram (e.g. ``000 0011``,
+    split across two words). Returns one concatenated bit-string per table row.
+    """
+    hdrs = [w for w in words if str(w[4]).strip().lower() == "opfield"]
+    if not hdrs:
+        return []
+    h = hdrs[0]
+    hxc = (float(h[0]) + float(h[2])) / 2
+    hy = float(h[1])
+    by_row: dict[int, list[tuple[float, str]]] = {}
+    for w in words:
+        t = str(w[4]).strip()
+        if not re.fullmatch(r"[01]+", t):
+            continue
+        xc = (float(w[0]) + float(w[2])) / 2
+        if float(w[1]) > hy and abs(xc - hxc) <= 30.0:
+            by_row.setdefault(round(float(w[1])), []).append((xc, t))
+    values: list[str] = []
+    for y in sorted(by_row):
+        parts = sorted(by_row[y], key=lambda p: p[0])
+        values.append("".join(t for _, t in parts))
+    return values
+
+
+def _apply_opfields(
+    encodings: "list[dict[str, Any]]", opvals: "list[str]",
+) -> "list[dict[str, Any]]":
+    """Expand each encoding's variable ``op`` field into one encoding per Opfield
+    value (constraining ``op`` to that value). Encodings without an identifiable
+    ``op`` field pass through unchanged."""
+    if not opvals:
+        return encodings
+    val_widths = {len(v) for v in opvals}
+    out: list[dict[str, Any]] = []
+    for enc in encodings:
+        segs = enc["segments"]
+        idx = next(
+            (i for i, s in enumerate(segs)
+             if s.get("value") is None and (s.get("name") or "").lower() in ("op", "opcode")),
+            None,
+        )
+        if idx is None:  # fall back: a unique variable field whose width matches
+            cand = [
+                i for i, s in enumerate(segs)
+                if s.get("value") is None and s.get("name")
+                and (s["hi"] - s["lo"] + 1) in val_widths
+            ]
+            idx = cand[0] if len(cand) == 1 else None
+        if idx is None:
+            out.append(enc)
+            continue
+        width = segs[idx]["hi"] - segs[idx]["lo"] + 1
+        matching = [v for v in opvals if len(v) == width]
+        if not matching:
+            out.append(enc)
+            continue
+        for v in matching:
+            new_segs = [dict(s) for s in segs]
+            new_segs[idx] = {"name": None, "hi": segs[idx]["hi"], "lo": segs[idx]["lo"], "value": v}
+            out.append({"width": enc["width"], "segments": new_segs})
+    return out
 
 
 def encodings_from_words(words: "list[Word]") -> "list[dict[str, Any]]":
@@ -209,17 +352,28 @@ def encodings_from_words(words: "list[Word]") -> "list[dict[str, Any]]":
         ]
         if not candidates:
             continue
+        value_y = candidates[0]
+        raw_bits = [b for _, b in cells]
+        max_bit, min_bit = max(raw_bits), min(raw_bits)
         cells = _interpolate_cells(cells)
         # Restrict the value row to this run's x-span so side-by-side grids
         # don't claim each other's tokens.
         xs = [xc for xc, _ in cells]
         gaps = sorted(b - a for a, b in zip(sorted(xs), sorted(xs)[1:]))
         tol = (gaps[len(gaps) // 2] / 2 + 2) if gaps else 8.0
+        x_lo, x_hi = min(xs) - tol, max(xs) + tol
         row_words = [
-            w for w in rows[candidates[0]]
-            if min(xs) - tol <= (float(w[0]) + float(w[2])) / 2 <= max(xs) + tol
+            w for w in rows[value_y]
+            if x_lo <= (float(w[0]) + float(w[2])) / 2 <= x_hi
         ]
-        segments = _decode_value_row(cells, row_words)
+        # Prefer an explicit field-width row (exact) over x-interpolation.
+        segments = None
+        if min_bit == 0:
+            width_words = _width_row_words(value_y, ys, rows, x_lo, x_hi, header_ys)
+            if width_words:
+                segments = _decode_with_widths(max_bit, row_words, width_words)
+        if segments is None:
+            segments = _decode_value_row(cells, row_words)
         bits = [b for _, b in cells]
         halves.append({
             "y": y, "x": x_left,
@@ -256,7 +410,10 @@ def encodings_from_words(words: "list[Word]") -> "list[dict[str, Any]]":
             k += 1
         else:
             k += 1  # dangling upper half — incomplete grid, drop it
-    return encodings
+
+    # Constrain a shared diagram's variable `op` field from the page's Opfield
+    # opcode-map table, yielding one encoding per opcode value (TI C6x).
+    return _apply_opfields(encodings, _opfield_values(words))
 
 
 def render_encoding_lines(encodings: "list[dict[str, Any]]") -> "list[str]":
