@@ -25,11 +25,30 @@ logger = logging.getLogger(__name__)
 Word = Sequence[Any]
 
 
-def _rows(words: "list[Word]") -> "dict[int, list[str]]":
-    """Word texts grouped into visual rows keyed by rounded top-y."""
+_ROW_TOL = 3.0  # pts of baseline wobble tolerated within one visual row
+
+
+def _rows(words: "list[Word]", tol: float = _ROW_TOL) -> "dict[int, list[str]]":
+    """Word texts grouped into visual rows keyed by the row's top-y.
+
+    Grouping is tolerance-based, not exact-rounded: a heading's label and its
+    value frequently sit a point apart (e.g. ``ADD`` at y=103 with its ``Syntax``
+    anchor at y=104), and exact keying would split them into different rows and
+    lose the pairing.
+    """
     rows: dict[int, list[str]] = {}
-    for w in words:
-        rows.setdefault(round(float(w[1])), []).append(str(w[4]).strip())
+    start: float | None = None
+    bucket: list[str] = []
+    for w in sorted(words, key=lambda w: float(w[1])):
+        y = float(w[1])
+        if start is None:
+            start = y
+        elif y - start > tol:
+            rows[round(start)] = bucket
+            start, bucket = y, []
+        bucket.append(str(w[4]).strip())
+    if start is not None:
+        rows[round(start)] = bucket
     return rows
 
 
