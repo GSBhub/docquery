@@ -277,6 +277,9 @@ def build_structure_documents(
     return docs
 
 
+_ENCODING_INTRO = "Bit-layout encoding (recovered from the document's bit-numbered diagram):"
+
+
 def build_encoding_documents(
     source: str,
     encodings_by_page: dict[int, list[str]],
@@ -286,8 +289,45 @@ def build_encoding_documents(
     """Build encoding-grid Documents (see :func:`build_structure_documents`)."""
     return build_structure_documents(
         source, "encoding_grid", encodings_by_page, page_text, page_entities,
-        intro="Bit-layout encoding (recovered from the document's bit-numbered diagram):",
+        intro=_ENCODING_INTRO,
     )
+
+
+def build_owned_encoding_documents(
+    source: str,
+    owned_by_page: dict[int, list[tuple[str, str | None]]],
+    page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+) -> list[Document]:
+    """One encoding-grid Document per (page, owning entity).
+
+    Takes the geometry-attributed output of
+    :func:`docquery._bitgrid.extract_document_encodings_owned` and groups each
+    page's diagrams by the entity that owns them, tagging the owner as
+    ``entity_<rule>`` metadata. Consumers can then match a diagram to its
+    instruction/register **by name** instead of guessing from the page, which
+    cross-assigns on packed or split pages. Diagrams with no resolvable owner
+    still get a page-level document so nothing is lost.
+    """
+    # entity name -> the rule that matched it, for the metadata tag key
+    rule_of: dict[str, str] = {}
+    for per_rule in page_entities.values():
+        for rule, entries in per_rule.items():
+            for name, _line in entries:
+                rule_of.setdefault(name, rule)
+
+    docs: list[Document] = []
+    for page, items in sorted(owned_by_page.items()):
+        grouped: dict[str | None, list[str]] = {}
+        for line, owner in items:
+            grouped.setdefault(owner, []).append(line)
+        for owner, lines in grouped.items():
+            headings = [owner] if owner else []
+            content = "\n".join(headings + [_ENCODING_INTRO] + lines)
+            metadata: dict = {"source": source, "page": page, "kind": "encoding_grid"}
+            if owner:
+                _merge_entity_tag(metadata, f"{ENTITY_PREFIX}{rule_of.get(owner, 'instruction')}", [owner])
+            docs.append(Document(page_content=content, metadata=metadata))
+    return docs
 
 
 def _build_chroma(settings: Settings, collection_name: str = "db_knowledge") -> Chroma:
@@ -350,16 +390,26 @@ def ingest_documents(
     # beyond use by the text loader).
     for p in file_paths:
         if str(p).lower().endswith(".pdf"):
-            from docquery._bitgrid import extract_document_encodings
+            from docquery._bitgrid import (
+                extract_document_encodings,
+                extract_document_encodings_owned,
+            )
             from docquery._pdf import extract_outline, extract_page_text, persist_outline
             from docquery._tables import extract_document_tables, split_lines_by_kind, table_names
             page_text = extract_page_text(p)
             page_entities = match_page_entities(page_text, rules) if rules else {}
-            encodings_by_page = extract_document_encodings(p)
-            if encodings_by_page:
-                docs.extend(build_encoding_documents(
-                    str(p), encodings_by_page, page_text, page_entities,
-                ))
+            if page_entities:
+                # Attribute each diagram to its owning entity by reading-order
+                # geometry so consumers can match by name, not by page.
+                owned = extract_document_encodings_owned(p, page_entities)
+                if owned:
+                    docs.extend(build_owned_encoding_documents(str(p), owned, page_entities))
+            else:
+                encodings_by_page = extract_document_encodings(p)
+                if encodings_by_page:
+                    docs.extend(build_encoding_documents(
+                        str(p), encodings_by_page, page_text, page_entities,
+                    ))
             tables_by_page = extract_document_tables(p, structure_rules)
             rules_by_kind = {r.kind: r for r in structure_rules}
             for kind, kind_pages in split_lines_by_kind(tables_by_page).items():
