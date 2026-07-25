@@ -293,6 +293,53 @@ def build_encoding_documents(
     )
 
 
+def owner_rule_map(
+    page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+) -> dict[str, str]:
+    """``{entity_name: rule_name}`` — the metadata tag key for each owner."""
+    rule_of: dict[str, str] = {}
+    for per_rule in page_entities.values():
+        for rule, entries in per_rule.items():
+            for name, _line in entries:
+                rule_of.setdefault(name, rule)
+    return rule_of
+
+
+def build_owned_documents(
+    source: str,
+    kind: str,
+    grouped: dict[tuple[int, str | None], list[str]],
+    intro: str,
+    rule_of: dict[str, str],
+    default_rule: str,
+    extra_tags: dict[tuple[int, str | None], tuple[str, list[str]]] | None = None,
+) -> list[Document]:
+    """One ``kind`` Document per (page, owning entity), owner tagged in metadata.
+
+    *grouped* maps ``(page, owner)`` to the block's rendered lines. The owner
+    leads the text (so similarity search associates the machine-parseable lines
+    with the right entity) and is tagged as ``entity_<rule>`` metadata, letting
+    consumers match a block to its entity **by name** rather than guessing from
+    the page. *extra_tags* adds a second ``(entity_type, names)`` tag per group —
+    used for tables whose rows name entities of their own (registers, pins, …).
+    Blocks with no resolvable owner still get a document, so nothing is lost.
+    """
+    docs: list[Document] = []
+    for (page, owner), lines in sorted(grouped.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
+        headings = [owner] if owner else []
+        content = "\n".join(headings + [intro] + lines)
+        metadata: dict = {"source": source, "page": page, "kind": kind}
+        if owner:
+            _merge_entity_tag(metadata, f"{ENTITY_PREFIX}{rule_of.get(owner, default_rule)}", [owner])
+        if extra_tags and (extra := extra_tags.get((page, owner))):
+            entity_type, names = extra
+            names = [n for n in names if n and n.strip()]
+            if entity_type and names:
+                _merge_entity_tag(metadata, f"{ENTITY_PREFIX}{entity_type}", names)
+        docs.append(Document(page_content=content, metadata=metadata))
+    return docs
+
+
 def build_owned_encoding_documents(
     source: str,
     owned_by_page: dict[int, list[tuple[str, str | None]]],
@@ -301,32 +348,56 @@ def build_owned_encoding_documents(
     """One encoding-grid Document per (page, owning entity).
 
     Takes the geometry-attributed output of
-    :func:`docquery._bitgrid.extract_document_encodings_owned` and groups each
-    page's diagrams by the entity that owns them, tagging the owner as
-    ``entity_<rule>`` metadata. Consumers can then match a diagram to its
-    instruction/register **by name** instead of guessing from the page, which
-    cross-assigns on packed or split pages. Diagrams with no resolvable owner
-    still get a page-level document so nothing is lost.
+    :func:`docquery._bitgrid.extract_document_encodings_owned`.
     """
-    # entity name -> the rule that matched it, for the metadata tag key
-    rule_of: dict[str, str] = {}
-    for per_rule in page_entities.values():
-        for rule, entries in per_rule.items():
-            for name, _line in entries:
-                rule_of.setdefault(name, rule)
+    grouped: dict[tuple[int, str | None], list[str]] = {}
+    for page, items in owned_by_page.items():
+        for line, owner in items:
+            grouped.setdefault((page, owner), []).append(line)
+    return build_owned_documents(
+        source, "encoding_grid", grouped, _ENCODING_INTRO,
+        owner_rule_map(page_entities), default_rule="instruction",
+    )
+
+
+def build_owned_structure_documents(
+    source: str,
+    owned_by_page: dict[int, list[tuple[str, list[str], list[str], str | None]]],
+    page_entities: dict[int, dict[str, list[tuple[str, str]]]],
+    entity_type_by_kind: dict[str, str] | None = None,
+) -> list[Document]:
+    """Structure Documents per (kind, page, owning entity).
+
+    Takes the geometry-attributed output of
+    :func:`docquery._tables.extract_document_tables_owned`. Any kind benefits —
+    register fields, register/memory maps, pin and interrupt tables — because
+    "which entity owns this block" is the same question regardless of what the
+    block holds. When a kind has a name column, its row names are additionally
+    tagged as ``entity_<type>`` so enumeration can still walk them.
+    """
+    rule_of = owner_rule_map(page_entities)
+    by_kind: dict[str, dict[tuple[int, str | None], list[str]]] = {}
+    names_by_group: dict[str, dict[tuple[int, str | None], list[str]]] = {}
+    for page, items in owned_by_page.items():
+        for kind, lines, names, owner in items:
+            by_kind.setdefault(kind, {}).setdefault((page, owner), []).extend(lines)
+            if names:
+                names_by_group.setdefault(kind, {}).setdefault((page, owner), []).extend(names)
 
     docs: list[Document] = []
-    for page, items in sorted(owned_by_page.items()):
-        grouped: dict[str | None, list[str]] = {}
-        for line, owner in items:
-            grouped.setdefault(owner, []).append(line)
-        for owner, lines in grouped.items():
-            headings = [owner] if owner else []
-            content = "\n".join(headings + [_ENCODING_INTRO] + lines)
-            metadata: dict = {"source": source, "page": page, "kind": "encoding_grid"}
-            if owner:
-                _merge_entity_tag(metadata, f"{ENTITY_PREFIX}{rule_of.get(owner, 'instruction')}", [owner])
-            docs.append(Document(page_content=content, metadata=metadata))
+    for kind, grouped in by_kind.items():
+        entity_type = (entity_type_by_kind or {}).get(kind)
+        extra = None
+        if entity_type:
+            extra = {
+                key: (entity_type, names)
+                for key, names in (names_by_group.get(kind) or {}).items()
+            }
+        docs.extend(build_owned_documents(
+            source, kind, grouped,
+            intro=f"Structured {kind.replace('_', ' ')} (recovered from the document's table layout):",
+            rule_of=rule_of, default_rule="entity", extra_tags=extra,
+        ))
     return docs
 
 
@@ -395,7 +466,12 @@ def ingest_documents(
                 extract_document_encodings_owned,
             )
             from docquery._pdf import extract_outline, extract_page_text, persist_outline
-            from docquery._tables import extract_document_tables, split_lines_by_kind, table_names
+            from docquery._tables import (
+                extract_document_tables,
+                extract_document_tables_owned,
+                split_lines_by_kind,
+                table_names,
+            )
             page_text = extract_page_text(p)
             page_entities = match_page_entities(page_text, rules) if rules else {}
             if page_entities:
@@ -410,24 +486,38 @@ def ingest_documents(
                     docs.extend(build_encoding_documents(
                         str(p), encodings_by_page, page_text, page_entities,
                     ))
-            tables_by_page = extract_document_tables(p, structure_rules)
             rules_by_kind = {r.kind: r for r in structure_rules}
-            for kind, kind_pages in split_lines_by_kind(tables_by_page).items():
-                rule = rules_by_kind.get(kind)
-                names_by_page = None
-                entity_type = None
-                if rule is not None and rule.name_column:
-                    names_by_page = {
-                        pg: table_names(lines, rule.name_column)
-                        for pg, lines in kind_pages.items()
-                    }
-                    entity_type = rule.entity_type or rule.kind
-                docs.extend(build_structure_documents(
-                    str(p), kind, kind_pages, page_text, page_entities,
-                    intro=f"Structured {kind.replace('_', ' ')} (recovered from the document's table layout):",
-                    names_by_page=names_by_page,
-                    entity_type=entity_type,
-                ))
+            if page_entities and structure_rules:
+                # Attribute each table to its owning entity by reading-order
+                # geometry rather than lumping a page's tables together under the
+                # page's first text line (often just a running header).
+                owned_tables = extract_document_tables_owned(p, structure_rules, page_entities)
+                if owned_tables:
+                    docs.extend(build_owned_structure_documents(
+                        str(p), owned_tables, page_entities,
+                        entity_type_by_kind={
+                            r.kind: (r.entity_type or r.kind)
+                            for r in structure_rules if r.name_column
+                        },
+                    ))
+            else:
+                tables_by_page = extract_document_tables(p, structure_rules)
+                for kind, kind_pages in split_lines_by_kind(tables_by_page).items():
+                    rule = rules_by_kind.get(kind)
+                    names_by_page = None
+                    entity_type = None
+                    if rule is not None and rule.name_column:
+                        names_by_page = {
+                            pg: table_names(lines, rule.name_column)
+                            for pg, lines in kind_pages.items()
+                        }
+                        entity_type = rule.entity_type or rule.kind
+                    docs.extend(build_structure_documents(
+                        str(p), kind, kind_pages, page_text, page_entities,
+                        intro=f"Structured {kind.replace('_', ' ')} (recovered from the document's table layout):",
+                        names_by_page=names_by_page,
+                        entity_type=entity_type,
+                    ))
             if page_entities:
                 propagate_page_entities(docs, page_entities, str(p))
             outline = extract_outline(p)

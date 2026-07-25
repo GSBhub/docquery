@@ -41,6 +41,17 @@ def test_heading_positions_name_only_rule_matches_bare_name():
     assert heading_positions(words, [("LDW", "LDW")]) == [(50, "LDW")]
 
 
+def test_heading_matches_name_wrapped_in_punctuation():
+    """Manuals delimit the name — `19.4.3 GPIO output register (GPIOx_OMODE)` —
+    and the PDF keeps the parens attached to the word."""
+    words = [
+        _word(100, 200, "19.4.3"), _word(150, 200, "register"),
+        _word(200, 200, "(GPIOx_OMODE)"),
+    ]
+    got = heading_positions(words, [("GPIOx_OMODE", "19.4.3 register (GPIOx_OMODE)")])
+    assert got == [(200, "GPIOx_OMODE")]
+
+
 def test_heading_positions_missing_name_is_skipped():
     assert heading_positions([_word(100, 50, "ADD")], [("SUB", "Syntax SUB")]) == []
 
@@ -68,6 +79,17 @@ def test_block_above_the_first_heading_uses_carried_owner():
         1: [("enc1", "ADD")],
         2: [("enc2", "ADD"), ("enc3", "SUB")],
     }
+
+
+def test_carry_expires_so_a_stale_owner_cannot_spread():
+    """An owner must not propagate indefinitely — mislabelling unrelated blocks
+    is worse than leaving them unattributed, since consumers trust attribution."""
+    blocks = {1: [(300, "enc1")], 2: [(100, "enc2")], 9: [(100, "far")]}
+    heads = {1: [(200, "ADD")]}
+    got = assign_owners(blocks, heads, max_carry_pages=2)
+    assert got[1] == [("enc1", "ADD")]
+    assert got[2] == [("enc2", "ADD")]      # within the carry window
+    assert got[9] == [("far", None)]        # expired
 
 
 def test_block_with_no_heading_anywhere_has_no_owner():

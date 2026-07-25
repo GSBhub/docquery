@@ -26,6 +26,21 @@ Word = Sequence[Any]
 
 
 _ROW_TOL = 3.0  # pts of baseline wobble tolerated within one visual row
+# Pages an owner may carry past its heading before expiring. Descriptions
+# legitimately run long (a C6x instruction documents .L/.S/.D on consecutive
+# pages, each with its own diagrams), so this is a runaway guard — it stops an
+# owner leaking into an unrelated section, not a tight span limit.
+_MAX_CARRY_PAGES = 8
+
+
+def _norm(text: str) -> str:
+    """Strip surrounding punctuation so a token matches its bare name.
+
+    Headings routinely wrap the entity name in delimiters — ``(GPIOx_OMODE)``,
+    ``ADD,`` , ``CTRL:`` — and the PDF keeps them attached to the word, so exact
+    text comparison would never match the name.
+    """
+    return str(text).strip().strip("()[]{}<>,;:.\"'").strip()
 
 
 def _rows(words: "list[Word]", tol: float = _ROW_TOL) -> "dict[int, list[str]]":
@@ -63,17 +78,18 @@ def heading_positions(
     anchor or a section number) at least one of those tokens — that pairing
     avoids latching onto a running page header that merely repeats the name.
     """
-    rows = _rows(words)
+    rows = {y: {_norm(t) for t in texts} for y, texts in _rows(words).items()}
     out: list[tuple[int, str]] = []
     for name, line in entries:
-        if not name:
+        key = _norm(name)
+        if not key:
             continue
-        others = {t for t in str(line).split() if t and t != name}
+        others = {_norm(t) for t in str(line).split()} - {key, ""}
         best: int | None = None
         for y, texts in rows.items():
-            if name not in texts:
+            if key not in texts:
                 continue
-            if others and not (others & set(texts)):
+            if others and not (others & texts):
                 continue
             if best is None or y < best:
                 best = y
@@ -85,19 +101,32 @@ def heading_positions(
 def assign_owners(
     blocks_by_page: "dict[int, list[tuple[int, Any]]]",
     headings_by_page: "dict[int, list[tuple[int, str]]]",
+    max_carry_pages: int = _MAX_CARRY_PAGES,
 ) -> "dict[int, list[tuple[Any, str | None]]]":
     """Attribute each positioned block to its owning entity.
 
     *blocks_by_page* is ``{page: [(y, block)]}`` and *headings_by_page* is
     ``{page: [(y, name)]}`` (see :func:`heading_positions`). Returns
     ``{page: [(block, owner_or_None)]}``: a block's owner is the nearest heading
-    at or above it on the same page, else the owner carried over from the
+    at or above it on the same page, else the owner carried over from a recent
     previous page (an entity whose description continues past a page break).
+
+    The carry expires after *max_carry_pages* pages without a heading: a
+    description rarely runs longer than that, so a stale owner propagating
+    onward would silently mislabel unrelated blocks — worse than no owner, since
+    consumers treat attribution as ground truth.
     """
     owners: dict[int, list[tuple[Any, str | None]]] = {}
     carried: str | None = None
+    carried_page: int | None = None
     for page in sorted(set(blocks_by_page) | set(headings_by_page)):
         heads = sorted(headings_by_page.get(page) or [])
+        if (
+            carried is not None
+            and carried_page is not None
+            and page - carried_page > max_carry_pages
+        ):
+            carried = None
         placed: list[tuple[Any, str | None]] = []
         for y, block in sorted(blocks_by_page.get(page) or []):
             above = [name for hy, name in heads if hy <= y]
@@ -106,4 +135,5 @@ def assign_owners(
             owners[page] = placed
         if heads:
             carried = heads[-1][1]
+            carried_page = page
     return owners
