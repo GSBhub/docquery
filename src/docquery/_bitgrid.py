@@ -319,7 +319,7 @@ def _apply_opfields(
         for v in matching:
             new_segs = [dict(s) for s in segs]
             new_segs[idx] = {"name": None, "hi": segs[idx]["hi"], "lo": segs[idx]["lo"], "value": v}
-            out.append({"width": enc["width"], "segments": new_segs})
+            out.append({**enc, "segments": new_segs})
     return out
 
 
@@ -394,19 +394,19 @@ def encodings_from_words(words: "list[Word]") -> "list[dict[str, Any]]":
             # Side-by-side halves on one row: left half is the upper bits.
             width = 2 * (h["hi"] + 1)
             encodings.append({
-                "width": width,
+                "width": width, "y": h["y"],
                 "segments": _shift_segments(h["segments"], h["hi"] + 1) + nxt["segments"],
             })
             k += 2
         elif h["lo"] > 0 and nxt and nxt["hi"] == h["lo"] - 1 and nxt["lo"] == 0:
             # Stacked halves: header bit numbers are already absolute.
             encodings.append({
-                "width": h["hi"] + 1,
+                "width": h["hi"] + 1, "y": h["y"],
                 "segments": h["segments"] + nxt["segments"],
             })
             k += 2
         elif h["lo"] == 0:
-            encodings.append({"width": h["hi"] + 1, "segments": h["segments"]})
+            encodings.append({"width": h["hi"] + 1, "y": h["y"], "segments": h["segments"]})
             k += 1
         else:
             k += 1  # dangling upper half — incomplete grid, drop it
@@ -462,6 +462,68 @@ def parse_encoding_line(line: str) -> "dict[str, Any] | None":
 def extract_page_encodings(page: Any) -> "list[dict[str, Any]]":
     """Extract encodings from a pymupdf page object."""
     return encodings_from_words(page.get_text("words"))
+
+
+def extract_document_encodings_owned(
+    pdf_path: "str | Path",
+    page_entities: "dict[int, dict[str, list[tuple[str, str]]]]",
+) -> "dict[int, list[tuple[str, str | None]]]":
+    """``{page: [(encoding_line, owner_entity_or_None)]}`` for the whole PDF.
+
+    Same extraction as :func:`extract_document_encodings`, but each diagram is
+    attributed to the instruction/entity that owns it using reading-order
+    geometry (:mod:`docquery._owners`) rather than merely the page it sits on —
+    reference manuals pack several instructions onto a page and split
+    descriptions across page breaks, so page-level attribution cross-assigns.
+    """
+    try:
+        import fitz  # pymupdf
+    except ImportError:  # pragma: no cover - dependency is declared
+        logger.warning("pymupdf not available; skipping bit-grid extraction")
+        return {}
+
+    from docquery._owners import assign_owners, heading_positions
+
+    blocks_by_page: dict[int, list[tuple[int, str]]] = {}
+    headings_by_page: dict[int, list[tuple[int, str]]] = {}
+    try:
+        with fitz.open(str(pdf_path)) as doc:
+            for i, page in enumerate(doc, start=1):
+                try:
+                    words = page.get_text("words")
+                    encodings = [
+                        e for e in encodings_from_words(words)
+                        if any(seg.get("value") for seg in e["segments"])
+                    ]
+                except Exception as exc:  # noqa: BLE001 - one bad page ≠ no grids
+                    logger.debug("bit-grid extraction failed on page %d: %s", i, exc)
+                    continue
+                if encodings:
+                    lines = render_encoding_lines(encodings)
+                    blocks_by_page[i] = [
+                        (int(e.get("y") or 0), ln) for e, ln in zip(encodings, lines)
+                    ]
+                entries = [
+                    pair
+                    for per_rule in (page_entities.get(i) or {}).values()
+                    for pair in per_rule
+                ]
+                if entries:
+                    headings_by_page[i] = heading_positions(words, entries)
+    except Exception as exc:  # noqa: BLE001 - any pymupdf failure → no grids
+        logger.warning("extract_document_encodings_owned failed for %s: %s", pdf_path, exc)
+        return {}
+
+    owned = assign_owners(blocks_by_page, headings_by_page)
+    result = {pg: items for pg, items in owned.items() if items}
+    if result:
+        total = sum(len(v) for v in result.values())
+        attributed = sum(1 for v in result.values() for _, o in v if o)
+        logger.info(
+            "bit-grid extraction: %d encodings on %d pages (%d attributed to an entity) in %s",
+            total, len(result), attributed, pdf_path,
+        )
+    return result
 
 
 def extract_document_encodings(pdf_path: "str | Path") -> "dict[int, list[str]]":
