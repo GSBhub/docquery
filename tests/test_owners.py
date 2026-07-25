@@ -20,6 +20,13 @@ def test_heading_position_needs_anchor_token_not_just_the_name():
     assert heading_positions(words, [("ADD", "Syntax   ADD")]) == [(200, "ADD")]
 
 
+def test_heading_row_tolerates_baseline_wobble():
+    """The label and its anchor often sit a point apart (real TI manuals do this:
+    `ADD` at y=103 with `Syntax` at y=104) — they must still pair up."""
+    words = [_word(160, 103, "ADD"), _word(100, 104, "Syntax")]
+    assert heading_positions(words, [("ADD", "Syntax   ADD")]) == [(103, "ADD")]
+
+
 def test_heading_positions_sorted_by_y():
     words = [
         _word(100, 400, "Syntax"), _word(160, 400, "SUB"),
