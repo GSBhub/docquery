@@ -277,6 +277,9 @@ def tables_from_words(words: "list[Word]", rules: "list[StructureRule]") -> "lis
                 "columns": keys,
                 "rows": data_rows,
                 "names": [r[name_key] for r in named] if rule.name_column else [],
+                # y of the table's header row — the anchor used to attribute the
+                # table to the entity heading above it (see docquery._owners).
+                "y": ys[i],
             })
             i = j
         else:
@@ -356,6 +359,77 @@ def table_names(lines: "list[str]", name_column: str) -> "list[str]":
 def extract_page_tables(page: Any, rules: "list[StructureRule]") -> "list[dict[str, Any]]":
     """Extract rule-matching tables from a pymupdf page object."""
     return tables_from_words(page.get_text("words"), rules)
+
+
+def extract_document_tables_owned(
+    pdf_path: "str | Path",
+    rules: "list[StructureRule]",
+    page_entities: "dict[int, dict[str, list[tuple[str, str]]]]",
+) -> "dict[int, list[tuple[str, list[str], list[str], str | None]]]":
+    """``{page: [(kind, lines, names, owner_or_None)]}`` for the whole PDF.
+
+    Same extraction as :func:`extract_document_tables`, but each table is
+    attributed to the entity that owns it using reading-order geometry
+    (:mod:`docquery._owners`) instead of being lumped in with everything else on
+    its page. Manuals put several registers/peripherals on a page and continue
+    them past page breaks, and the page's first text line — the usual heading
+    fallback — is often just a running header, so page-level grouping mislabels
+    the block.
+    """
+    if not rules:
+        return {}
+    try:
+        import fitz  # pymupdf
+    except ImportError:  # pragma: no cover - dependency is declared
+        logger.warning("pymupdf not available; skipping table extraction")
+        return {}
+
+    from docquery._owners import assign_owners, heading_positions
+
+    blocks_by_page: dict[int, list[tuple[int, Any]]] = {}
+    headings_by_page: dict[int, list[tuple[int, str]]] = {}
+    try:
+        with fitz.open(str(pdf_path)) as doc:
+            for i, page in enumerate(doc, start=1):
+                words = page.get_text("words")
+                try:
+                    tables = tables_from_words(words, rules)
+                except Exception as exc:  # noqa: BLE001 - one bad page ≠ no tables
+                    logger.debug("table extraction failed on page %d of %s: %s", i, pdf_path, exc)
+                    continue
+                if tables:
+                    blocks_by_page[i] = [
+                        (
+                            int(t.get("y") or 0),
+                            (t["kind"], render_table_lines([t]), list(t.get("names") or [])),
+                        )
+                        for t in tables
+                    ]
+                entries = [
+                    pair
+                    for per_rule in (page_entities.get(i) or {}).values()
+                    for pair in per_rule
+                ]
+                if entries:
+                    headings_by_page[i] = heading_positions(words, entries)
+    except Exception as exc:  # noqa: BLE001 - any pymupdf failure → no tables
+        logger.warning("extract_document_tables_owned failed for %s: %s", pdf_path, exc)
+        return {}
+
+    owned = assign_owners(blocks_by_page, headings_by_page)
+    result = {
+        pg: [(kind, lines, names, owner) for (kind, lines, names), owner in items]
+        for pg, items in owned.items()
+        if items
+    }
+    if result:
+        total = sum(len(v) for v in result.values())
+        attributed = sum(1 for v in result.values() for item in v if item[3])
+        logger.info(
+            "table extraction: %d tables on %d pages (%d attributed to an entity) in %s",
+            total, len(result), attributed, pdf_path,
+        )
+    return result
 
 
 def extract_document_tables(
