@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from docquery._bitgrid import (
+    _opfield_values,
     encodings_from_words,
     extract_document_encodings,
     parse_encoding_line,
@@ -274,3 +275,56 @@ def test_build_encoding_documents_extends_heading_with_next_line():
     lines = d.page_content.splitlines()
     assert lines[0] == "A7.7.4"
     assert lines[1] == "ADD (register)"
+
+
+def _c6x_diagram_at(y: float):
+    """A c6x-style 8-bit diagram (A[7:5] op[4:2] 1[1] p[0]) anchored at *y*."""
+    words = [_word(_col(b), y, str(b)) for b in (7, 5, 4, 2, 1, 0)]
+    words += [_word(_col(6), y + 12, "A"), _word(_col(3), y + 12, "op"),
+              _word(_col(1), y + 12, "1"), _word(_col(0), y + 12, "p")]
+    words += [_word(_col(6), y + 26, "3"), _word(_col(3), y + 26, "3"),
+              _word(_col(0), y + 26, "1")]
+    return words
+
+
+def _opfield_table_at(y: float, values: list[str]):
+    words = [_word(300, y, "Opfield")]
+    for i, v in enumerate(values):
+        words.append(_word(300, y + 12 * (i + 1), v))
+    return words
+
+
+def test_each_diagram_uses_only_the_opfield_table_beneath_it():
+    """Two diagrams of the SAME op width on one page must not swap opcode values.
+
+    Scanning the whole page gives every diagram every value; the widths only
+    disambiguate when they happen to differ, which is not guaranteed.
+    """
+    words = _c6x_diagram_at(100) + _opfield_table_at(150, ["011", "101"])
+    words += _c6x_diagram_at(300) + _opfield_table_at(350, ["110"])
+
+    lines = render_encoding_lines(encodings_from_words(words))
+    assert lines == [
+        "ENCODING 8-bit: A[7:5] bits[4:2]=011 bits[1:1]=1 p[0:0]",
+        "ENCODING 8-bit: A[7:5] bits[4:2]=101 bits[1:1]=1 p[0:0]",
+        "ENCODING 8-bit: A[7:5] bits[4:2]=110 bits[1:1]=1 p[0:0]",
+    ], f"opcode values crossed between diagrams: {lines}"
+
+
+def test_opfield_values_are_restricted_to_their_band():
+    words = _opfield_table_at(150, ["011", "101"]) + _opfield_table_at(350, ["110"])
+    assert _opfield_values(words, 100, 300) == ["011", "101"]
+    assert _opfield_values(words, 300, float("inf")) == ["110"]
+    assert _opfield_values(words, 0, 100) == []      # no header in band
+
+
+def test_width_row_rejected_when_widths_do_not_tile_the_word():
+    """A width row that does not sum to the encoding width can't be trusted, so
+    the decoder falls back to x-interpolation rather than inventing boundaries."""
+    words = [_word(_col(b), 100, str(b)) for b in (7, 5, 4, 2, 1, 0)]
+    words += [_word(_col(6), 112, "A"), _word(_col(3), 112, "op"),
+              _word(_col(1), 112, "1"), _word(_col(0), 112, "p")]
+    words += [_word(_col(6), 126, "2"), _word(_col(3), 126, "2"),
+              _word(_col(0), 126, "1")]          # 2+2+1+1 = 6, not 8
+    lines = render_encoding_lines(encodings_from_words(words))
+    assert lines and "A[7:6]" not in lines[0], f"bad width row was trusted: {lines}"

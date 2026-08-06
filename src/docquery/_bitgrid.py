@@ -255,18 +255,28 @@ def _shift_segments(segments: "list[dict[str, Any]]", by: int) -> "list[dict[str
     return [{**s, "hi": s["hi"] + by, "lo": s["lo"] + by} for s in segments]
 
 
-def _opfield_values(words: "list[Word]") -> "list[str]":
+def _opfield_values(
+    words: "list[Word]", y_min: float = 0.0, y_max: float = float("inf"),
+) -> "list[str]":
     """Binary values from a TI ``Opfield`` opcode-map column, or ``[]``.
 
     C6x instructions share one unit diagram whose ``op`` field is a *variable*;
     the actual opcode value per operand-type is listed in the ``Opfield`` column
     of the "Opcode map field used…" table below the diagram (e.g. ``000 0011``,
     split across two words). Returns one concatenated bit-string per table row.
+
+    Scanning is restricted to the ``[y_min, y_max)`` band so a page holding
+    several diagrams gives each one only the table that belongs to it. Without
+    the band every value on the page reaches every diagram, and the values only
+    land correctly when the diagrams' ``op`` widths happen to differ.
     """
-    hdrs = [w for w in words if str(w[4]).strip().lower() == "opfield"]
+    hdrs = [
+        w for w in words
+        if str(w[4]).strip().lower() == "opfield" and y_min <= float(w[1]) < y_max
+    ]
     if not hdrs:
         return []
-    h = hdrs[0]
+    h = min(hdrs, key=lambda w: float(w[1]))
     hxc = (float(h[0]) + float(h[2])) / 2
     hy = float(h[1])
     by_row: dict[int, list[tuple[float, str]]] = {}
@@ -275,7 +285,7 @@ def _opfield_values(words: "list[Word]") -> "list[str]":
         if not re.fullmatch(r"[01]+", t):
             continue
         xc = (float(w[0]) + float(w[2])) / 2
-        if float(w[1]) > hy and abs(xc - hxc) <= 30.0:
+        if hy < float(w[1]) < y_max and abs(xc - hxc) <= 30.0:
             by_row.setdefault(round(float(w[1])), []).append((xc, t))
     values: list[str] = []
     for y in sorted(by_row):
@@ -285,16 +295,30 @@ def _opfield_values(words: "list[Word]") -> "list[str]":
 
 
 def _apply_opfields(
-    encodings: "list[dict[str, Any]]", opvals: "list[str]",
+    encodings: "list[dict[str, Any]]", words: "list[Word]",
 ) -> "list[dict[str, Any]]":
     """Expand each encoding's variable ``op`` field into one encoding per Opfield
     value (constraining ``op`` to that value). Encodings without an identifiable
-    ``op`` field pass through unchanged."""
-    if not opvals:
-        return encodings
-    val_widths = {len(v) for v in opvals}
+    ``op`` field pass through unchanged.
+
+    Each diagram is given only the Opfield table in its own vertical band —
+    from the diagram down to the next one — so a page holding several diagrams
+    does not cross-apply their opcode values.
+    """
+    ordered = sorted(encodings, key=lambda e: float(e.get("y") or 0))
+    bands: list[tuple[float, float]] = []
+    for i, enc in enumerate(ordered):
+        top = float(enc.get("y") or 0)
+        bottom = float(ordered[i + 1].get("y")) if i + 1 < len(ordered) else float("inf")
+        bands.append((top, bottom))
+
     out: list[dict[str, Any]] = []
-    for enc in encodings:
+    for enc, (top, bottom) in zip(ordered, bands):
+        opvals = _opfield_values(words, top, bottom)
+        if not opvals:
+            out.append(enc)
+            continue
+        val_widths = {len(v) for v in opvals}
         segs = enc["segments"]
         idx = next(
             (i for i, s in enumerate(segs)
@@ -411,9 +435,9 @@ def encodings_from_words(words: "list[Word]") -> "list[dict[str, Any]]":
         else:
             k += 1  # dangling upper half — incomplete grid, drop it
 
-    # Constrain a shared diagram's variable `op` field from the page's Opfield
-    # opcode-map table, yielding one encoding per opcode value (TI C6x).
-    return _apply_opfields(encodings, _opfield_values(words))
+    # Constrain each shared diagram's variable `op` field from the Opfield
+    # opcode-map table beneath it, yielding one encoding per opcode value (TI C6x).
+    return _apply_opfields(encodings, words)
 
 
 def render_encoding_lines(encodings: "list[dict[str, Any]]") -> "list[str]":
