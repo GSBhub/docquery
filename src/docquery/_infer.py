@@ -48,7 +48,10 @@ DEFAULT_CANDIDATES: "dict[str, str]" = {
 }
 
 _OUTLINE_LEAF_RE = re.compile(r"^([A-Z]?[\d.]*\d)\s+([A-Z][A-Z0-9_]{1,11})\s*$")
-_MIN_OUTLINE_SUPPORT = 8  # leaf titles sharing a prefix shape before we trust it
+# Leaf titles sharing a prefix shape before we trust it as a numbering scheme.
+# A handful of incidental matches ('A1.1 NOTE') is not a scheme; a real
+# instruction/register chapter has dozens.
+_MIN_OUTLINE_SUPPORT = 8
 
 
 def outline_candidates(outline: "Sequence[dict[str, Any]]") -> "dict[str, str]":
@@ -67,7 +70,7 @@ def outline_candidates(outline: "Sequence[dict[str, Any]]") -> "dict[str, str]":
             continue
         # "A7.7.12" -> "A7.7.<n>": the varying leaf number becomes \d+
         prefix = m.group(1)
-        shape = re.sub(r"\d+$", r"\\d+", re.escape(prefix).replace(r"\.", r"\."))
+        shape = re.sub(r"\d+$", r"\\d+", re.escape(prefix))
         shapes[shape] = shapes.get(shape, 0) + 1
 
     out: dict[str, str] = {}
@@ -80,8 +83,17 @@ def outline_candidates(outline: "Sequence[dict[str, Any]]") -> "dict[str, str]":
     return out
 
 
-def _page_blocks(pdf_path: "str | Path", rules: "list[Any] | None"):
-    """``(words_by_page, blocks_by_page, n_blocks)`` — one geometry pass.
+def _scan(
+    pdf_path: "str | Path",
+    rules: "list[Any] | None",
+    per_candidate: "dict[str, dict]",
+) -> "tuple[dict[int, list], dict[str, dict], int]":
+    """One geometry pass: recovered blocks, plus heading positions per candidate.
+
+    Returns ``(blocks_by_page, {candidate: headings_by_page}, n_blocks)``. Each
+    page's words are used and dropped rather than cached for the whole document
+    — a reference manual is hundreds of pages and holding every word's geometry
+    at once is the largest cost in this module.
 
     Blocks are every recovered structure item (encoding diagrams *and* tables) so
     the score reflects whatever the document actually contains.
@@ -89,14 +101,14 @@ def _page_blocks(pdf_path: "str | Path", rules: "list[Any] | None"):
     import fitz  # pymupdf
 
     from docquery._bitgrid import encodings_from_words
+    from docquery._owners import heading_positions
     from docquery._tables import tables_from_words
 
-    words_by_page: dict[int, Any] = {}
     blocks: dict[int, list[tuple[int, str]]] = {}
+    heads: dict[str, dict[int, list]] = {name: {} for name in per_candidate}
     with fitz.open(str(pdf_path)) as doc:
         for i, page in enumerate(doc, start=1):
             words = page.get_text("words")
-            words_by_page[i] = words
             items: list[tuple[int, str]] = []
             try:
                 items += [
@@ -113,7 +125,11 @@ def _page_blocks(pdf_path: "str | Path", rules: "list[Any] | None"):
                     pass
             if items:
                 blocks[i] = items
-    return words_by_page, blocks, sum(len(v) for v in blocks.values())
+            for cand, per_page in per_candidate.items():
+                entries = [pair for pairs in (per_page.get(i) or {}).values() for pair in pairs]
+                if entries and (pos := heading_positions(words, entries)):
+                    heads[cand][i] = pos
+    return blocks, heads, sum(len(v) for v in blocks.values())
 
 
 def score_patterns(
@@ -125,11 +141,12 @@ def score_patterns(
     """Score entity-rule candidates against *pdf_path*, best first.
 
     Each result is ``{"name", "pattern", "entities", "attributed", "blocks",
-    "owners", "precision", "recall", "score"}``. Uses no LLM and no embeddings,
+    "owners", "precision", "recall", "score"}``, where ``entities`` is the count
+    of *distinct* entity names the rule tagged. Uses no LLM and no embeddings,
     so it is cheap enough to run before committing to an ingest.
     """
     from docquery._ingest import match_page_entities
-    from docquery._owners import assign_owners, heading_positions
+    from docquery._owners import assign_owners
     from docquery._pdf import extract_outline, extract_page_text
     from docquery.config import EntityRule, Settings
 
@@ -140,36 +157,40 @@ def score_patterns(
             structure_rules = []
 
     page_text = extract_page_text(pdf_path)
-    words_by_page, blocks, n_blocks = _page_blocks(pdf_path, structure_rules)
-    if not n_blocks:
-        logger.warning("no structure blocks recovered from %s; cannot score patterns", pdf_path)
-        return []
-
     pool = dict(candidates or DEFAULT_CANDIDATES)
     if candidates is None:
         pool.update(outline_candidates(extract_outline(pdf_path) or []))
 
-    results: list[dict[str, Any]] = []
+    # Match every candidate up front (text only, no geometry) so the geometry
+    # pass below can be done once for all of them.
+    per_candidate: dict[str, dict] = {}
     for name, pattern in pool.items():
         try:
-            per_page = match_page_entities(page_text, [EntityRule(name=entity_name, pattern=pattern)])
+            per_candidate[name] = match_page_entities(
+                page_text, [EntityRule(name=entity_name, pattern=pattern)])
         except re.error as exc:
             logger.debug("candidate %s is not a valid regex: %s", name, exc)
-            continue
-        n_entities = sum(len(v) for pr in per_page.values() for v in pr.values())
-        heads = {}
-        for page, per_rule in per_page.items():
-            entries = [pair for pairs in per_rule.values() for pair in pairs]
-            if pos := heading_positions(words_by_page.get(page, []), entries):
-                heads[page] = pos
-        owned = assign_owners(blocks, heads)
+
+    blocks, heads, n_blocks = _scan(pdf_path, structure_rules, per_candidate)
+    if not n_blocks:
+        logger.warning("no structure blocks recovered from %s; cannot score patterns", pdf_path)
+        return []
+
+    results: list[dict[str, Any]] = []
+    for name, per_page in per_candidate.items():
+        # Both sides of the ratio must count the same thing. match_page_entities
+        # dedupes within a page but not across, so a name recurring on several
+        # pages would otherwise inflate the denominator and penalise a rule for
+        # tagging entities whose descriptions span pages.
+        tagged = {n for pr in per_page.values() for pairs in pr.values() for n, _ in pairs}
+        owned = assign_owners(blocks, heads.get(name) or {})
         attributed = sum(1 for v in owned.values() for item in v if item[1])
-        owners = len({item[1] for v in owned.values() for item in v if item[1]})
-        precision = owners / n_entities if n_entities else 0.0
+        owners = {item[1] for v in owned.values() for item in v if item[1]}
+        precision = len(owners) / len(tagged) if tagged else 0.0
         recall = attributed / n_blocks
         results.append({
-            "name": name, "pattern": pattern, "entities": n_entities,
-            "attributed": attributed, "blocks": n_blocks, "owners": owners,
+            "name": name, "pattern": pool[name], "entities": len(tagged),
+            "attributed": attributed, "blocks": n_blocks, "owners": len(owners),
             "precision": round(precision, 3), "recall": round(recall, 3),
             "score": round(precision * recall, 4),
         })
