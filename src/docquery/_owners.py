@@ -18,6 +18,7 @@ this field table" — so every structure kind can share it.
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right
 from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,10 @@ Word = Sequence[Any]
 
 
 _ROW_TOL = 3.0  # pts of baseline wobble tolerated within one visual row
+# Height of the running-header band below the topmost row on a page. Only used
+# for anchorless patterns, where nothing else distinguishes a repeated header
+# from the real heading.
+_HEADER_BAND = 20.0
 # Pages an owner may carry past its heading before expiring. Descriptions
 # legitimately run long (a C6x instruction documents .L/.S/.D on consecutive
 # pages, each with its own diagrams), so this is a runaway guard — it stops an
@@ -51,6 +56,7 @@ def _rows(words: "list[Word]", tol: float = _ROW_TOL) -> "dict[int, list[str]]":
     anchor at y=104), and exact keying would split them into different rows and
     lose the pairing.
     """
+    # Cluster starts are >tol apart, so their rounded keys never collide.
     rows: dict[int, list[str]] = {}
     start: float | None = None
     bucket: list[str] = []
@@ -77,22 +83,40 @@ def heading_positions(
     name **and** (when the matched line has other tokens, e.g. a ``Syntax``
     anchor or a section number) at least one of those tokens — that pairing
     avoids latching onto a running page header that merely repeats the name.
+
+    Patterns that capture only a bare name have no anchor to pair with, so for
+    those the page's header band is skipped instead; the topmost match is used
+    only when the name appears nowhere else on the page.
     """
     rows = {y: {_norm(t) for t in texts} for y, texts in _rows(words).items()}
+    if not rows:
+        return []
+    # A running header repeats the entity name at the very top of the page. When
+    # the matched line carries an anchor token the pairing rejects it, but a
+    # pattern that captures only a bare name has no anchor to pair with — so for
+    # those, skip the header band outright rather than latching onto the topmost
+    # occurrence and placing the heading above every block on the page.
+    top_y = min(rows)
+    header_band = top_y + _HEADER_BAND
+
     out: list[tuple[int, str]] = []
     for name, line in entries:
         key = _norm(name)
         if not key:
             continue
         others = {_norm(t) for t in str(line).split()} - {key, ""}
-        best: int | None = None
-        for y, texts in rows.items():
-            if key not in texts:
-                continue
-            if others and not (others & texts):
-                continue
-            if best is None or y < best:
-                best = y
+        candidates = [
+            y for y, texts in rows.items()
+            if key in texts and (not others or (others & texts))
+        ]
+        if others:
+            best = min(candidates, default=None)
+        else:
+            # Prefer the first occurrence below the header band; fall back to the
+            # topmost only if the name appears nowhere else. (`or` would be wrong
+            # here — a legitimate y of 0 is falsy.)
+            below = [y for y in candidates if y > header_band]
+            best = min(below) if below else min(candidates, default=None)
         if best is not None:
             out.append((best, name))
     return sorted(out)
@@ -127,10 +151,12 @@ def assign_owners(
             and page - carried_page > max_carry_pages
         ):
             carried = None
+        head_ys = [hy for hy, _ in heads]
         placed: list[tuple[Any, str | None]] = []
         for y, block in sorted(blocks_by_page.get(page) or []):
-            above = [name for hy, name in heads if hy <= y]
-            placed.append((block, above[-1] if above else carried))
+            # Rightmost heading at or above the block, in reading order.
+            i = bisect_right(head_ys, y)
+            placed.append((block, heads[i - 1][1] if i else carried))
         if placed:
             owners[page] = placed
         if heads:

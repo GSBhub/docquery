@@ -94,3 +94,20 @@ def test_carry_expires_so_a_stale_owner_cannot_spread():
 
 def test_block_with_no_heading_anywhere_has_no_owner():
     assert assign_owners({1: [(300, "enc")]}, {}) == {1: [("enc", None)]}
+
+
+def test_anchorless_pattern_skips_the_running_header():
+    """A pattern capturing only a bare name has no anchor to pair with, so the
+    header band is skipped explicitly — otherwise the topmost occurrence (the
+    running header) wins and the heading lands above every block on the page."""
+    words = [
+        _word(300, 20, "ADD"),                    # running header
+        _word(100, 400, "ADD"),                   # the real heading, mid-page
+    ]
+    assert heading_positions(words, [("ADD", "ADD")]) == [(400, "ADD")]
+
+
+def test_anchorless_pattern_falls_back_when_only_the_header_matches():
+    """If the name appears nowhere else, use it rather than losing the entity."""
+    words = [_word(300, 20, "ADD"), _word(100, 25, "other")]
+    assert heading_positions(words, [("ADD", "ADD")]) == [(20, "ADD")]
