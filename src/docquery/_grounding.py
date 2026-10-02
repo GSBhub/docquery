@@ -110,7 +110,7 @@ def _scalar_in_text(value: object, text: str) -> bool:
             return True
         if isinstance(value, int):
             # the document may spell the same number in hex
-            return bool(re.search(rf"0[xX]0*{value:x}\b", text))
+            return bool(re.search(rf"0[xX]0*{value:x}\b", text, re.IGNORECASE))
         return False
     v = str(value).strip()
     if v.lower() in text.lower():
@@ -150,6 +150,34 @@ def _model_items(instance: object) -> "dict | None":
 _MACHINE_PREFIXES = ("ENCODING ", "TABLE ", "ROW ")
 
 
+# Unstructured text loaders often split one table row's cells onto separate
+# lines (often separate blank-line blocks): a register name, then its offset
+# (and reset value). A name-only line followed directly by hex-only lines is
+# re-joined into one virtual row unit. Name first and adjacent only, so a
+# name is never paired with a hex cell that comes before it or after another
+# name.
+_NAME_CELL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_\[\]]{0,31}")
+_HEX_CELL_RE = re.compile(r"0[xX][0-9a-fA-F_]+(?: [0-9a-fA-F]{4})*")
+_MAX_ROW_HEX_CELLS = 3
+
+
+def _virtual_row_units(context: str) -> list[str]:
+    """``name 0xOFFSET [0xRESET …]`` units re-joined from split table cells."""
+    cells = [ln.strip() for ln in context.splitlines() if ln.strip()]
+    rows: list[str] = []
+    for i, cell in enumerate(cells):
+        if not _NAME_CELL_RE.fullmatch(cell) or _HEX_CELL_RE.fullmatch(cell):
+            continue
+        hexes: list[str] = []
+        for nxt in cells[i + 1:i + 1 + _MAX_ROW_HEX_CELLS]:
+            if not _HEX_CELL_RE.fullmatch(nxt):
+                break
+            hexes.append(nxt)
+        if hexes:
+            rows.append(" ".join([cell, *hexes]))
+    return rows
+
+
 # A block without machine lines only counts as one unit when it is small
 # enough to plausibly describe a single entity (a register section's
 # "heading / Address offset: … / Reset value: …" stanza), not a table
@@ -178,9 +206,12 @@ def _grounding_units(context: str) -> tuple[str, ...]:
     above its first machine line) is one unit, and a small machine-line-free
     block (≤ ``_MAX_BLOCK_UNIT_LINES`` lines and ``_MAX_BLOCK_UNIT_CHARS``
     chars) is one unit. Machine/data lines are still never merged with each
-    other, and blocks never merge across blank lines.
+    other, and blocks never merge across blank lines — except for virtual
+    row units (see :func:`_virtual_row_units`): a name cell directly followed
+    by hex cells (offset, reset value) is re-joined into one row, because
+    unstructured loaders split a table row's cells onto separate lines.
     """
-    units: list[str] = []
+    units: list[str] = _virtual_row_units(context)
     for block in re.split(r"\n\s*\n", context):
         lines = [ln for ln in block.splitlines() if ln.strip()]
         if not lines:
