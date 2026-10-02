@@ -26,7 +26,7 @@ import logging
 import typing
 from typing import Any, Callable
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 from pydantic_core import PydanticUndefined
 
 from docquery.config import Settings
@@ -102,7 +102,11 @@ def _reduced_model(model: type[BaseModel], exclude: set[str]) -> type[BaseModel]
         if name in drop:
             continue
         default = info.default if info.default is not PydanticUndefined else None
-        fields[name] = (info.annotation, default)
+        # keep json_schema_extra so per-field opt-outs ({"grounding": "off"})
+        # still apply to the reduced model the grounding check sees
+        fields[name] = (info.annotation, Field(
+            default=default, description=info.description,
+            json_schema_extra=info.json_schema_extra))
     if not fields:
         return None
     return create_model(f"{model.__name__}Scalars", **fields)

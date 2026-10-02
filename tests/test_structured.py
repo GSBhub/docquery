@@ -76,6 +76,18 @@ def test_reduced_model_drops_list_and_seed():
     assert st._reduced_model(Chip, exclude=set()) is None   # only a list field
 
 
+def test_reduced_model_keeps_grounding_opt_outs():
+    class R(BaseModel):
+        name: str
+        offset: str | None = None
+        access: str | None = Field(default="rw", json_schema_extra={"grounding": "off"})
+
+    reduced = st._reduced_model(R, exclude={"name"})
+    assert reduced.model_fields["access"].json_schema_extra == {"grounding": "off"}
+    assert reduced.model_fields["access"].default == "rw"
+    assert reduced.model_fields["offset"].json_schema_extra is None
+
+
 def test_reduced_model_keeps_non_enumerable_nested_list():
     # An instruction's operand list is not an enumeration; the LLM fills it in
     # the single-shot pass, so it must survive the reduction.

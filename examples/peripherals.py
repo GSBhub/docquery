@@ -46,6 +46,10 @@ class Register(BaseModel):
     offset: str | None = None
     address: str | None = None
     reset_value: str | None = None
+    # Register summary tables print name/offset/reset, not the access mode or
+    # prose — those live in the paragraphs below — so they are not grounded.
+    access: str | None = Field(default="rw", json_schema_extra={"grounding": "off"})
+    description: str | None = Field(default=None, json_schema_extra={"grounding": "off"})
     fields: list[RegisterField] = Field(
         default_factory=list, json_schema_extra={"enumerate": "register_field"})
 

@@ -19,6 +19,7 @@ range. No LLM, no embedding — pure string/number work, unit-testable.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Verifiable claim shapes. Bare decimals are deliberately NOT extracted from
 # free text: they are too noisy (list positions, counts, page references) and
@@ -157,7 +158,8 @@ _MAX_BLOCK_UNIT_LINES = 4
 _MAX_BLOCK_UNIT_CHARS = 400
 
 
-def _grounding_units(context: str) -> list[str]:
+@lru_cache(maxsize=8)
+def _grounding_units(context: str) -> tuple[str, ...]:
     """Units for record co-occurrence checks.
 
     Each non-empty line stands alone, except that machine lines of a structure
@@ -199,7 +201,7 @@ def _grounding_units(context: str) -> list[str]:
                 units.append(f"{heading}\n{ln}")
             else:
                 units.append(ln)
-    return units
+    return tuple(units)
 
 
 def ungrounded_records(instance: object, context: str, _prefix: str = "") -> list[str]:
@@ -252,3 +254,47 @@ def ungrounded_fields(instance: object, context: str, _prefix: str = "") -> list
     elif _is_verifiable_scalar(instance) and not _scalar_in_text(instance, context):
         misses.append(f"{_prefix.rstrip('.')}={instance!r}")
     return misses
+
+
+def _entry_misses(entry: object, context: str) -> list[str]:
+    """Presence and co-occurrence misses of one list entry (record or scalar)."""
+    return ungrounded_fields(entry, context) + ungrounded_records(entry, context)
+
+
+def _prune(value: object, context: str, prefix: str, dropped: list[str]) -> object:
+    if isinstance(value, (list, tuple)):
+        kept = []
+        for i, entry in enumerate(value):
+            entry = _prune(entry, context, f"{prefix}{i}.", dropped)
+            if misses := _entry_misses(entry, context):
+                dropped.append(f"{prefix}{i}: " + "; ".join(misses))
+                continue
+            kept.append(entry)
+        return type(value)(kept)
+    if (items := _model_items(value)) is not None:
+        updates = {}
+        for name, v in items.items():
+            new = _prune(v, context, f"{prefix}{name}.", dropped)
+            if new is not v:
+                updates[name] = new
+        return value.model_copy(update=updates) if updates else value  # type: ignore[union-attr]
+    if isinstance(value, dict):
+        return {k: _prune(v, context, f"{prefix}{k}.", dropped) for k, v in value.items()}
+    return value
+
+
+def prune_ungrounded(instance: object, context: str) -> tuple[object, list[str]]:
+    """Drop ungrounded list entries; return ``(pruned_instance, dropped)``.
+
+    One invented or mispaired entry should cost that entry, not the whole
+    extraction: failing the record wholesale for a single bad register
+    collapses an otherwise-grounded list to nothing after retries. Walks the
+    instance bottom-up, so an entry's own ungrounded sub-entries are pruned
+    before the entry itself is judged, and drops every list entry (record or
+    scalar) with a presence or co-occurrence miss. ``dropped`` describes each
+    removed entry by dotted path. Values outside any list are left in place —
+    :func:`ungrounded_fields` / :func:`ungrounded_records` on the pruned
+    instance report them.
+    """
+    dropped: list[str] = []
+    return _prune(instance, context, "", dropped), dropped
