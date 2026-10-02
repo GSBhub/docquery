@@ -435,3 +435,53 @@ def test_prune_respects_grounding_exempt_fields():
                            description="Non-maskable interrupt vector")])
     pruned, dropped = prune_ungrounded(regs, ROWS)
     assert dropped == [] and len(pruned.items) == 1
+
+
+# ---------------------------------------------------------------------------
+# uppercase hex and split table cells
+# ---------------------------------------------------------------------------
+
+def test_int_found_as_uppercase_hex_in_document():
+    class M(BaseModel):
+        offset: int
+
+    assert ungrounded_fields(M(offset=28), "Address offset: 0x1C") == []
+    assert ungrounded_fields(M(offset=0xAC), "offset 0X00AC") == []
+
+
+SPLIT_CELLS = """GPIOx_CFGR
+
+0x00
+
+0xA8000000
+
+GPIOx_OMODE
+
+0x04
+
+0x00000010"""
+
+
+def test_split_table_cells_rejoin_into_row_units():
+    from docquery._grounding import ungrounded_records
+
+    class Reg(BaseModel):
+        name: str
+        offset: str
+        reset_value: str | None = None
+
+    assert ungrounded_records(Reg(name="GPIOx_CFGR", offset="0x00",
+                                  reset_value="0xA8000000"), SPLIT_CELLS) == []
+    assert ungrounded_records(Reg(name="GPIOx_OMODE", offset="0x04"), SPLIT_CELLS) == []
+
+
+def test_split_cells_never_pair_a_name_with_another_rows_offset():
+    from docquery._grounding import ungrounded_records
+
+    class Reg(BaseModel):
+        name: str
+        offset: str
+
+    # 0x04 follows GPIOx_OMODE, not GPIOx_CFGR; 0xA8000000 precedes GPIOx_OMODE
+    assert ungrounded_records(Reg(name="GPIOx_CFGR", offset="0x04"), SPLIT_CELLS)
+    assert ungrounded_records(Reg(name="GPIOx_OMODE", offset="0xA8000000"), SPLIT_CELLS)

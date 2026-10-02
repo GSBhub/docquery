@@ -7,7 +7,7 @@ packages = ["src/docquery"]
 
 [project]
 name = "docquery"
-version = "0.3.0"
+version = "0.3.1"
 description = "PDF → embeddings → LangGraph structured extraction and RAG chat pipeline"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
