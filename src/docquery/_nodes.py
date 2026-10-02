@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from docquery.config import Settings, language_directive
 from docquery.embeddings.llm import get_structured_llm
-from docquery._grounding import ungrounded_fields, ungrounded_records
+from docquery._grounding import prune_ungrounded, ungrounded_fields, ungrounded_records
 from docquery._state import ExtractionState
 
 logger = logging.getLogger(__name__)
@@ -116,9 +116,17 @@ def make_extraction_nodes(
         # Schema-valid is not document-true: verifiable values must literally
         # appear in the retrieved context (the store is the source of truth),
         # and a record's values must co-occur on one line — presence alone
-        # cannot catch NMI paired with HardFault's address.
+        # cannot catch NMI paired with HardFault's address. Ungrounded list
+        # entries are pruned one by one in both strict and warn modes, so a
+        # single bad entry never fails (and after retries, empties) the whole
+        # list; only misses outside any list are left to retry/warn on.
         if settings.grounding != "off":
             context = state["retrieved_context"]
+            instance, dropped = prune_ungrounded(instance, context)
+            if dropped:
+                logger.warning("Pruned %d ungrounded extraction entr%s: %s",
+                               len(dropped), "y" if len(dropped) == 1 else "ies",
+                               "; ".join(dropped))
             misses = [
                 f"Value not found in the retrieved context: {m}. "
                 "Use only values that appear in the context; do not fill "

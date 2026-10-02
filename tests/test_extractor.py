@@ -237,3 +237,48 @@ def test_grounded_values_pass_strict(mock_llm, mock_tool, settings):
     )
     state = _run_nodes(_initial_state(), retrieve, extract, validate)
     assert state["validated"] == SimpleModel(name="foo", value=42)
+
+
+class Vec(BaseModel):
+    name: str
+    address: str
+
+
+class VecList(BaseModel):
+    items: list[Vec]
+
+
+_VEC_ROWS = "ROW 2 | NMI | 0x00000008\nROW 3 | HardFault | 0x0000000C"
+_VEC_ANSWER = json.dumps({"items": [
+    {"name": "NMI", "address": "0x08"},
+    {"name": "Reset", "address": "0x04"},       # invented
+    {"name": "HardFault", "address": "0x0C"},
+]})
+
+
+@pytest.mark.parametrize("mode", ["strict", "warn"])
+def test_ungrounded_list_entries_are_pruned_not_fatal(mock_llm, mock_tool, settings,
+                                                      caplog, mode):
+    # one invented entry must not fail (and after retries, empty) the list
+    settings.grounding = mode
+    mock_tool.invoke.return_value = _VEC_ROWS
+    mock_llm.invoke.return_value = _make_response(_VEC_ANSWER)
+    retrieve, extract, validate, should_retry = make_extraction_nodes(
+        mock_llm, mock_tool, VecList, "Extract data.", settings
+    )
+    with caplog.at_level("WARNING"):
+        state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert [v.name for v in state["validated"].items] == ["NMI", "HardFault"]
+    assert state["retry_count"] == 0 and should_retry(state) == "__end__"
+    assert any("Pruned 1 ungrounded" in r.message for r in caplog.records)
+
+
+def test_off_grounding_does_not_prune(mock_llm, mock_tool, settings):
+    settings.grounding = "off"
+    mock_tool.invoke.return_value = _VEC_ROWS
+    mock_llm.invoke.return_value = _make_response(_VEC_ANSWER)
+    retrieve, extract, validate, _ = make_extraction_nodes(
+        mock_llm, mock_tool, VecList, "Extract data.", settings
+    )
+    state = _run_nodes(_initial_state(), retrieve, extract, validate)
+    assert len(state["validated"].items) == 3

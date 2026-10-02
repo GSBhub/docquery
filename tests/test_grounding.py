@@ -368,3 +368,70 @@ def test_non_exempt_fields_still_enforced_alongside_exempt():
 
     misses = ungrounded_fields(M(name="INVENTED", access="rw"), ROWS)
     assert misses == ["name='INVENTED'"]
+
+
+# ---------------------------------------------------------------------------
+# prune_ungrounded (per-entry pruning instead of failing the whole record)
+# ---------------------------------------------------------------------------
+
+class VectorTable(BaseModel):
+    title: str | None = None
+    vectors: list[Vector]
+
+
+def test_prune_drops_only_the_ungrounded_entries():
+    from docquery._grounding import prune_ungrounded
+
+    table = VectorTable(vectors=[
+        Vector(name="NMI", address="0x08"),          # grounded
+        Vector(name="NMI", address="0x0C"),          # mispaired
+        Vector(name="Reset", address="0x04"),        # invented
+        Vector(name="HardFault", address="0x0C"),    # grounded
+    ])
+    pruned, dropped = prune_ungrounded(table, ROWS)
+    assert [v.name for v in pruned.vectors] == ["NMI", "HardFault"]
+    assert [d.split(":")[0] for d in dropped] == ["vectors.1", "vectors.2"]
+    assert table.vectors[1].address == "0x0C"        # input left untouched
+
+
+def test_prune_is_bottom_up_so_parents_survive_bad_children():
+    from docquery._grounding import prune_ungrounded
+
+    class Group(BaseModel):
+        name: str
+        vectors: list[Vector]
+
+    ctx = "TABLE groups: name\nROW Core\n" + ROWS
+    groups = [Group(name="Core", vectors=[Vector(name="NMI", address="0x08"),
+                                          Vector(name="Bogus", address="0x99")])]
+    pruned, dropped = prune_ungrounded(groups, ctx)
+    assert len(pruned) == 1 and [v.name for v in pruned[0].vectors] == ["NMI"]
+    assert len(dropped) == 1 and dropped[0].startswith("0.vectors.1")
+
+
+def test_prune_leaves_non_list_misses_for_the_caller():
+    from docquery._grounding import prune_ungrounded
+
+    m = Vector(name="Reset", address="0x04")
+    pruned, dropped = prune_ungrounded(m, ROWS)
+    assert pruned is m and dropped == []
+    assert ungrounded_fields(pruned, ROWS) != []
+
+
+def test_prune_respects_grounding_exempt_fields():
+    from docquery._grounding import prune_ungrounded
+    from pydantic import Field as PField
+
+    class Reg(BaseModel):
+        name: str
+        address: str
+        access: str | None = PField(default="rw", json_schema_extra={"grounding": "off"})
+        description: str | None = PField(default=None, json_schema_extra={"grounding": "off"})
+
+    class Regs(BaseModel):
+        items: list[Reg]
+
+    regs = Regs(items=[Reg(name="NMI", address="0x08", access="rw",
+                           description="Non-maskable interrupt vector")])
+    pruned, dropped = prune_ungrounded(regs, ROWS)
+    assert dropped == [] and len(pruned.items) == 1

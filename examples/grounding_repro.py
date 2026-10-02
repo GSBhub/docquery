@@ -80,7 +80,7 @@ class _MissCounter(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = record.getMessage()
-        if "Ungrounded extraction fields" in msg:
+        if "ungrounded extraction" in msg.lower():
             self.misses.append(msg)
 
 

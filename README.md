@@ -362,9 +362,14 @@ docquery counters both **deterministically** — no LLM-as-judge:
 - **Extraction** — the output schema is bound with provider structured output
   (grammar-constrained decoding on Ollama, so shape errors are impossible),
   and every verifiable scalar leaf of the extracted model must appear in the
-  retrieved context. In `strict` mode misses feed the existing
-  validation-retry loop with per-field messages; prose fields are exempt
-  (they're legitimately paraphrased).
+  retrieved context. Ungrounded list entries (an invented or mispaired
+  register, vector, field…) are pruned one by one in both `strict` and `warn`
+  modes and logged, so one bad entry never fails the whole list. Misses
+  outside any list feed the validation-retry loop in `strict` mode with
+  per-field messages. Prose fields are exempt (they're legitimately
+  paraphrased), and a schema can exempt any field that the source table
+  doesn't print with `Field(json_schema_extra={"grounding": "off"})`, for
+  example a register's `access` mode or `description`.
 
 `GROUNDING=strict|warn|off` (default `strict`). Note the check verifies
 *presence*, not reasoning: a value the model legitimately derived (e.g. a

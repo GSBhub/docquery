@@ -24,6 +24,14 @@ def test_description_field_is_grounding_exempt():
     assert extra == {"grounding": "off"}
 
 
+def test_register_access_and_description_are_grounding_exempt():
+    # summary tables print name/offset, not access modes or prose
+    fields = ep.Register.model_fields
+    assert fields["access"].default == "rw"
+    for name in ("access", "description"):
+        assert fields[name].json_schema_extra == {"grounding": "off"}
+
+
 def _structures_stub(rows):
     def structures(kind, settings=None):
         return [{"records": [{"columns": ["register", "address"], "rows": rows}]}]
