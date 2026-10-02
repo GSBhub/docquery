@@ -113,13 +113,13 @@ def _scalar_in_text(value: object, text: str) -> bool:
             return bool(re.search(rf"0[xX]0*{value:x}\b", text, re.IGNORECASE))
         return False
     v = str(value).strip()
-    if v.lower() in text.lower():
-        return True
     if _HEX_RE.fullmatch(v):
-        # hex spelled differently in the document (0x4 vs 0x00000004,
-        # or digit-grouped: 0xA800 0000)
+        # compare hex by numeric value against whole hex tokens, never as a
+        # substring ("0x00" is not in "0x00000010"); this also covers other
+        # spellings of the same value (0x4 vs 0x00000004, or digit-grouped:
+        # 0xA800 0000)
         return _norm_hex(v) in _hex_claims(text)
-    return False
+    return v.lower() in text.lower()
 
 
 def _record_scalars(record: dict) -> list[object]:

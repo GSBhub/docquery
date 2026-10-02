@@ -485,3 +485,25 @@ def test_split_cells_never_pair_a_name_with_another_rows_offset():
     # 0x04 follows GPIOx_OMODE, not GPIOx_CFGR; 0xA8000000 precedes GPIOx_OMODE
     assert ungrounded_records(Reg(name="GPIOx_CFGR", offset="0x04"), SPLIT_CELLS)
     assert ungrounded_records(Reg(name="GPIOx_OMODE", offset="0xA8000000"), SPLIT_CELLS)
+
+
+def test_hex_string_is_not_matched_as_a_substring():
+    class M(BaseModel):
+        offset: str
+
+    assert ungrounded_fields(M(offset="0x00"), "Reset value: 0x00000010") == ["offset='0x00'"]
+    assert ungrounded_fields(M(offset="0x1"), "offset 0x10") == ["offset='0x1'"]
+    assert ungrounded_fields(M(offset="0x00"), "offset 0x0000_0000") == []
+    assert ungrounded_fields(M(offset="0X1c"), "offset 0x001C") == []
+
+
+def test_split_cells_reset_value_is_not_read_as_a_shorter_offset():
+    from docquery._grounding import ungrounded_records
+
+    class Reg(BaseModel):
+        name: str
+        offset: str
+
+    ctx = "GPIOx_OMODE\n\n0x04\n\n0x00000010"
+    # 0x00 is only a prefix of OMODE's reset value 0x00000010
+    assert ungrounded_records(Reg(name="GPIOx_OMODE", offset="0x00"), ctx)
